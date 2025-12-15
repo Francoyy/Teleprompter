@@ -24,7 +24,6 @@ struct ContentView: View {
     @State private var screenHeight: CGFloat = 0
 
     private let defaultTeleText = """
-    Clipboard content:
     """
 
     @State private var teleText: String = ""

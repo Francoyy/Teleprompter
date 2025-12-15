@@ -1,12 +1,7 @@
 import Foundation
 import AVFoundation
-import CoreImage
-import CoreImage.CIFilterBuiltins
 import UIKit
 import Combine
-
-
-// MARK: - VideoRecorder
 
 class VideoRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
@@ -21,10 +16,9 @@ class VideoRecorder: NSObject, ObservableObject {
     private var audioInput: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
 
-    private let ciContext = CIContext()
-
-    private let outputWidth: Int = 3840
-    private let outputHeight: Int = 2160
+    // Set from selected activeFormat
+    private var outputWidth: Int = 0
+    private var outputHeight: Int = 0
 
     private var currentOutputURL: URL?
     private var sessionStartTime: CMTime?
@@ -32,10 +26,9 @@ class VideoRecorder: NSObject, ObservableObject {
     func setupSession() {
         session.beginConfiguration()
 
-        if session.canSetSessionPreset(.hd4K3840x2160) {
-            session.sessionPreset = .hd4K3840x2160
-        } else {
-            session.sessionPreset = .high
+        // Let the input format drive the session
+        if session.canSetSessionPreset(.inputPriority) {
+            session.sessionPreset = .inputPriority
         }
 
         let targetFps: Double = 30.0
@@ -44,22 +37,46 @@ class VideoRecorder: NSObject, ObservableObject {
                                                      for: .video,
                                                      position: .front) {
 
+            // Log all formats so we can see what the device offers
+            print("\n=== FRONT CAMERA AVAILABLE FORMATS ===")
+            for (index, format) in videoDevice.formats.enumerated() {
+                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                let range = format.videoSupportedFrameRateRanges.first
+                let minFps = range?.minFrameRate ?? 0
+                let maxFps = range?.maxFrameRate ?? 0
+                let fov = format.videoFieldOfView
+                let mediaSubtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+                let fourCC = String(format: "%4.4s",
+                                    [UInt8((mediaSubtype >> 24) & 0xff),
+                                     UInt8((mediaSubtype >> 16) & 0xff),
+                                     UInt8((mediaSubtype >> 8) & 0xff),
+                                     UInt8(mediaSubtype & 0xff)])
+                let pixels = Int(dims.width) * Int(dims.height)
+                print("""
+                [Format \(index)]
+                  Dimensions: \(dims.width)x\(dims.height) (\(pixels) px)
+                  FPS range: \(minFps) - \(maxFps)
+                  FOV: \(String(format: "%.2f", fov))°
+                  MediaSubType: \(fourCC)
+                """)
+            }
+            print("=== END FRONT CAMERA FORMATS ===\n")
+
+            // Pick the highest pixel count format that supports targetFps
             if #available(iOS 13.0, *) {
-                let candidateFormats = videoDevice.formats.filter { format in
+                let fpsCapable = videoDevice.formats.filter { format in
                     guard let range = format.videoSupportedFrameRateRanges.first else { return false }
                     return range.minFrameRate <= targetFps && range.maxFrameRate >= targetFps
                 }
 
-                if let bestFormat = candidateFormats.max(by: { lhs, rhs in
-                    if lhs.videoFieldOfView != rhs.videoFieldOfView {
-                        return lhs.videoFieldOfView < rhs.videoFieldOfView
-                    }
+                if let bestFormat = fpsCapable.max(by: { lhs, rhs in
                     let ld = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
                     let rd = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
                     let lPixels = Int(ld.width) * Int(ld.height)
                     let rPixels = Int(rd.width) * Int(rd.height)
                     return lPixels < rPixels
                 }) {
+
                     do {
                         try videoDevice.lockForConfiguration()
                         videoDevice.activeFormat = bestFormat
@@ -68,16 +85,37 @@ class VideoRecorder: NSObject, ObservableObject {
 
                         let dims = CMVideoFormatDescriptionGetDimensions(bestFormat.formatDescription)
                         let fov = bestFormat.videoFieldOfView
-                        print("Using front format: \(dims.width)x\(dims.height), FOV \(String(format: "%.2f", fov))°, target \(targetFps) fps")
+                        let pixels = Int(dims.width) * Int(dims.height)
+                        print("""
+                        USING FRONT FORMAT (max resolution at ~\(targetFps) fps):
+                          Dimensions: \(dims.width)x\(dims.height) (\(pixels) px)
+                          FOV: \(String(format: "%.2f", fov))°
+                          Target FPS: \(targetFps)
+                        """)
+
+                        outputWidth = Int(dims.width)
+                        outputHeight = Int(dims.height)
 
                         videoDevice.unlockForConfiguration()
                     } catch {
                         print("Failed to configure front camera format: \(error)")
                     }
                 } else {
-                    print("No front formats support target fps \(targetFps); using default.")
+                    print("No front formats support target fps \(targetFps); using default activeFormat.")
+                    let dims = CMVideoFormatDescriptionGetDimensions(videoDevice.activeFormat.formatDescription)
+                    outputWidth = Int(dims.width)
+                    outputHeight = Int(dims.height)
+                    print("Default activeFormat dimensions: \(dims.width)x\(dims.height)")
                 }
+            } else {
+                // Older iOS: just use activeFormat
+                let dims = CMVideoFormatDescriptionGetDimensions(videoDevice.activeFormat.formatDescription)
+                outputWidth = Int(dims.width)
+                outputHeight = Int(dims.height)
+                print("iOS < 13, using activeFormat: \(dims.width)x\(dims.height)")
             }
+
+            print("Configured output size (from activeFormat): \(outputWidth)x\(outputHeight)")
 
             do {
                 let videoInputDevice = try AVCaptureDeviceInput(device: videoDevice)
@@ -108,6 +146,7 @@ class VideoRecorder: NSObject, ObservableObject {
             print("No audio device available.")
         }
 
+        // Video output
         let videoQueue = DispatchQueue(label: "videoQueue")
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -124,8 +163,10 @@ class VideoRecorder: NSObject, ObservableObject {
         if let connection = videoOutput.connection(with: .video),
            connection.isVideoOrientationSupported {
             connection.videoOrientation = .portrait
+            print("Video connection orientation set to .portrait")
         }
 
+        // Audio output
         let audioQueue = DispatchQueue(label: "audioQueue")
         audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
         if session.canAddOutput(audioOutput) {
@@ -139,11 +180,31 @@ class VideoRecorder: NSObject, ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             self.session.startRunning()
             print("Capture session running: \(self.session.isRunning)")
+            print("Session activeFormat-based output: \(self.outputWidth)x\(self.outputHeight)")
         }
     }
 
     func startRecording() {
-        let filename = "landscape4k_\(UUID().uuidString).mov"
+        // Fallback if for some reason not set
+        if outputWidth == 0 || outputHeight == 0 {
+            if let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera,
+                                                         for: .video,
+                                                         position: .front) {
+                let dims = CMVideoFormatDescriptionGetDimensions(videoDevice.activeFormat.formatDescription)
+                outputWidth = Int(dims.width)
+                outputHeight = Int(dims.height)
+            }
+        }
+
+        // Your working logic: compute width from height (3:4 vertical)
+        let originalHeight = outputHeight
+        let newWidth = Int(round(Double(originalHeight) * 3.0 / 4.0))
+        print("Original output from sensor: \(outputWidth)x\(outputHeight)")
+        outputWidth = newWidth
+        outputHeight = originalHeight
+        print("Final writer output (3:4 vertical): \(outputWidth)x\(outputHeight)")
+
+        let filename = "native_\(outputWidth)x\(outputHeight)_\(UUID().uuidString).mov"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
         try? FileManager.default.removeItem(at: url)
         currentOutputURL = url
@@ -169,7 +230,7 @@ class VideoRecorder: NSObject, ObservableObject {
                 assetWriterInput: videoInput,
                 sourcePixelBufferAttributes: [
                     kCVPixelBufferPixelFormatTypeKey as String:
-                        kCVPixelFormatType_32BGRA,
+                        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
                     kCVPixelBufferWidthKey as String: outputWidth,
                     kCVPixelBufferHeightKey as String: outputHeight
                 ]
@@ -190,7 +251,6 @@ class VideoRecorder: NSObject, ObservableObject {
             }
 
             sessionStartTime = nil
-
             writer.startWriting()
 
             DispatchQueue.main.async {
@@ -198,6 +258,7 @@ class VideoRecorder: NSObject, ObservableObject {
             }
 
             print("Started recording to: \(url.lastPathComponent)")
+            print("Recording resolution (writer settings): \(outputWidth)x\(outputHeight)")
         } catch {
             print("Error creating AVAssetWriter: \(error)")
             currentOutputURL = nil
@@ -251,62 +312,34 @@ class VideoRecorder: NSObject, ObservableObject {
         if sessionStartTime == nil {
             sessionStartTime = timestamp
             writer.startSession(atSourceTime: timestamp)
+            print("Writer session started at time: \(timestamp.value)/\(timestamp.timescale)")
         }
 
-        let sourceImage = CIImage(cvPixelBuffer: imageBuffer)
-        let sourceExtent = sourceImage.extent
+        // No more horizontal squeeze: pass the buffer through as-is
+        let ok = adaptor.append(imageBuffer, withPresentationTime: timestamp)
 
-        let targetWidth = sourceExtent.height * 16.0 / 9.0
-        let cropX = (sourceExtent.width - targetWidth) / 2.0
-        let cropRect = CGRect(x: cropX,
-                              y: 0,
-                              width: targetWidth,
-                              height: sourceExtent.height)
-
-        let cropped = sourceImage.cropped(to: cropRect)
-        let rotated = cropped.oriented(.right)
-
-        var newBuffer: CVPixelBuffer?
-        let attrs: [String: Any] = [
-            kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
-            kCVPixelBufferWidthKey as String: outputWidth,
-            kCVPixelBufferHeightKey as String: outputHeight,
-            kCVPixelBufferPixelFormatTypeKey as String:
-                kCVPixelFormatType_32BGRA
-        ]
-
-        CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            outputWidth,
-            outputHeight,
-            kCVPixelFormatType_32BGRA,
-            attrs as CFDictionary,
-            &newBuffer
-        )
-
-        guard let newBuffer else { return }
-
-        ciContext.render(rotated, to: newBuffer)
-
-        adaptor.append(newBuffer, withPresentationTime: timestamp)
+        if !ok {
+            print("WARNING: Failed to append video buffer at \(timestamp) (status: \(writer.status)) error: \(String(describing: writer.error))")
+        }
     }
 
     private func processAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
         guard isRecording,
-              let _ = sessionStartTime,
+              sessionStartTime != nil,
               let audioInput = audioInput,
               audioInput.isReadyForMoreMediaData else {
             return
         }
 
-        audioInput.append(sampleBuffer)
+        if !audioInput.append(sampleBuffer) {
+            let ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            print("WARNING: Failed to append audio buffer at time \(ts)")
+        }
     }
 }
 
-// MARK: - Delegates
-
-extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
+extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
+                         AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {

@@ -2,27 +2,29 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
-// MARK: - CameraPreview
-
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
         view.videoPreviewLayer.session = session
-        view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        // .resizeAspect => see full sensor frame; no extra crop/zoom
+        view.videoPreviewLayer.videoGravity = .resizeAspect
         return view
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
-        if let connection = uiView.videoPreviewLayer.connection,
-           connection.isVideoOrientationSupported {
-            connection.videoOrientation = .portrait
+        if let connection = uiView.videoPreviewLayer.connection {
+            if #available(iOS 17.0, *) {
+                if connection.isVideoRotationAngleSupported(90) {
+                    connection.videoRotationAngle = 90 // portrait
+                }
+            } else if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
         }
     }
 }
-
-// MARK: - PreviewView
 
 final class PreviewView: UIView {
     override class var layerClass: AnyClass {

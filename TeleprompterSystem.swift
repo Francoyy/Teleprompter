@@ -7,7 +7,7 @@ import Combine
 final class AutoScrollController: ObservableObject {
     @Published var isAutoScrolling: Bool = false
     @Published var contentOffsetY: CGFloat = 0
-    @Published var autoScrollSpeed: CGFloat = 1.8   // smaller = slower
+    @Published var autoScrollSpeed: CGFloat = 1.2   // smaller = slower
 
     private var autoScrollTimer: Timer?
     var tickInterval: TimeInterval = 0.03
