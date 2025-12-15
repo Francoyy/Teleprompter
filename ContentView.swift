@@ -7,6 +7,7 @@ import UIKit
 // MARK: - Configuration
 // Adjust this value to change the teleprompter background opacity (0.0 = transparent, 1.0 = opaque)
 private let teleprompterBackgroundOpacity: Double = 0.3
+private let teleprompterFontSize: CGFloat = 40
 
 @main
 struct Yuan_Teleprompter2App: App {
@@ -57,7 +58,7 @@ struct ContentView: View {
                             Spacer().frame(height: 40)
 
                             Text(teleText)
-                                .font(.title3)
+                                .font(.system(size: teleprompterFontSize))
                                 .multilineTextAlignment(.center)
                                 .foregroundColor(.white)
                                 .frame(maxWidth: geo.size.width * 0.8)
@@ -278,18 +279,18 @@ struct ContentView: View {
                 print("DEBUG: Reset scroll position to spacer height: \(spacerHeight)")
                 
                 if explicitUserAction {
-                    saveMessage = "Added clipboard text to teleprompter."
+                    // saveMessage = "Added clipboard text to teleprompter." //we don't want to display any message. to be removed later on
                 }
             } else {
                 print("DEBUG: Clipboard string was empty after trimming")
                 if explicitUserAction {
-                    saveMessage = "Clipboard appears empty."
+                    // saveMessage = "Clipboard appears empty." //we don't want to display any message. to be removed later on
                 }
             }
         } else {
             print("DEBUG: Clipboard has no strings")
             if explicitUserAction {
-                saveMessage = "No text found in clipboard."
+                // saveMessage = "No text found in clipboard." //we don't want to display any message. to be removed later on
             }
         }
         
