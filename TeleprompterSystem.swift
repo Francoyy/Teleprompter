@@ -17,12 +17,21 @@ final class AutoScrollController: ObservableObject {
     let maxSpeed: CGFloat = 3.0   // shows as 20
     let step: CGFloat = 0.1       // +/-1 in UI
 
+    init() {
+        print("DEBUG: AutoScrollController init")
+    }
+
     func toggle() {
+        print("DEBUG: AutoScrollController toggle() called, current state: \(isAutoScrolling)")
         isAutoScrolling ? stop() : start()
     }
 
     func start() {
-        guard !isAutoScrolling else { return }
+        print("DEBUG: AutoScrollController start() called")
+        guard !isAutoScrolling else {
+            print("DEBUG: Already auto-scrolling, returning")
+            return
+        }
         isAutoScrolling = true
         autoScrollTimer?.invalidate()
 
@@ -33,7 +42,6 @@ final class AutoScrollController: ObservableObject {
             // TELEPROMPTER DIRECTION:
             // Increase offset over time. The view will translate this into text moving UP.
             let next = self.contentOffsetY + self.autoScrollSpeed
-            print("TICK: current=\(self.contentOffsetY) speed=\(self.autoScrollSpeed) -> next=\(next)")
             self.contentOffsetY = next
         }
         if let timer = autoScrollTimer {
@@ -44,7 +52,11 @@ final class AutoScrollController: ObservableObject {
     }
 
     func stop() {
-        guard isAutoScrolling else { return }
+        print("DEBUG: AutoScrollController stop() called")
+        guard isAutoScrolling else {
+            print("DEBUG: Already stopped, returning")
+            return
+        }
         isAutoScrolling = false
         autoScrollTimer?.invalidate()
         autoScrollTimer = nil
@@ -79,16 +91,12 @@ private extension CGFloat {
     }
 }
 
-// MARK: - AutoScrollView (Spacer-based, linear, consistent direction)
+// MARK: - AutoScrollView (Full-screen teleprompter)
 
 struct AutoScrollView<Content: View>: View {
     @Binding var contentOffsetY: CGFloat
     let isAutoScrolling: Bool
     let content: () -> Content
-
-    /// Global scale for how fast things move.
-    /// Larger = more movement; smaller = slower.
-    private let pointsPerUnit: CGFloat = 0.3
 
     init(contentOffsetY: Binding<CGFloat>,
          isAutoScrolling: Bool,
@@ -96,27 +104,154 @@ struct AutoScrollView<Content: View>: View {
         self._contentOffsetY = contentOffsetY
         self.isAutoScrolling = isAutoScrolling
         self.content = content
+        print("DEBUG: AutoScrollView init")
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ScrollView {
+        print("DEBUG: AutoScrollView body computed, contentOffsetY: \(contentOffsetY)")
+        return GeometryReader { proxy in
+            CustomScrollView(scrollOffset: $contentOffsetY, screenHeight: proxy.size.height) {
                 VStack(spacing: 0) {
-                    // As contentOffsetY increases, this spacer SHRINKS,
-                    // so the visible content moves UP (teleprompter behavior).
-                    // Option A: start roughly in the middle of the screen
-                    let topHeight = max(0, proxy.size.height * 0.1 - contentOffsetY * pointsPerUnit)
-
+                    // Top spacer: always half screen height
+                    // This keeps the first line of text in the middle
                     Color.clear
-                        .frame(height: topHeight)
+                        .frame(height: proxy.size.height * 0.5)
+                        .id("top-spacer")
 
                     content()
-                        .id("top")
+                        .id("content")
 
+                    // Bottom spacer to allow scrolling past the end
                     Color.clear
-                        .frame(height: proxy.size.height * 3)
+                        .frame(height: proxy.size.height * 2)
+                        .id("bottom-spacer")
                 }
+                .frame(maxWidth: .infinity)
             }
         }
+    }
+}
+
+// Custom UIScrollView wrapper for precise control
+struct CustomScrollView<Content: View>: UIViewRepresentable {
+    @Binding var scrollOffset: CGFloat
+    let screenHeight: CGFloat
+    let content: () -> Content
+    
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.isScrollEnabled = true // Enable manual scrolling
+        scrollView.delegate = context.coordinator
+        scrollView.bounces = true
+        scrollView.alwaysBounceVertical = true
+        scrollView.contentInsetAdjustmentBehavior = .never // Prevent auto-adjustment
+        
+        let hostingController = UIHostingController(rootView: content())
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.backgroundColor = .clear
+        
+        scrollView.addSubview(hostingController.view)
+        
+        NSLayoutConstraint.activate([
+            hostingController.view.topAnchor.constraint(equalTo: scrollView.topAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            hostingController.view.widthAnchor.constraint(equalTo: scrollView.widthAnchor)
+        ])
+        
+        context.coordinator.hostingController = hostingController
+        context.coordinator.scrollView = scrollView
+        
+        print("DEBUG: CustomScrollView makeUIView")
+        return scrollView
+    }
+    
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        // Update content and force layout first
+        if let hostingController = context.coordinator.hostingController {
+            hostingController.rootView = content()
+            
+            // FIX: Invalidate intrinsic content size to ensure the view resizes
+            // to fit the new content (e.g., long pasted text).
+            hostingController.view.invalidateIntrinsicContentSize()
+            
+            hostingController.view.setNeedsLayout()
+            hostingController.view.layoutIfNeeded()
+            
+            // FIX: Removed manual assignment of scrollView.contentSize.
+            // We rely on Auto Layout constraints (pinned edges) to calculate the
+            // content size automatically. Manually setting it here was causing
+            // the content to be clipped or centered incorrectly when the size
+            // calculation happened before the view fully expanded.
+        }
+        
+        // Only update scroll position if we're programmatically controlling it
+        // (not during manual scrolling)
+        if !context.coordinator.isManuallyScrolling {
+            let targetY = scrollOffset
+            
+            if abs(scrollView.contentOffset.y - targetY) > 0.1 {
+                print("DEBUG: [ScrollView] Setting scroll offset from \(scrollView.contentOffset.y) to \(targetY)")
+                scrollView.contentOffset.y = targetY
+                print("DEBUG: [ScrollView] After setting, actual offset: \(scrollView.contentOffset.y)")
+            }
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(scrollOffset: $scrollOffset)
+    }
+    
+    class Coordinator: NSObject, UIScrollViewDelegate {
+        var hostingController: UIHostingController<Content>?
+        var scrollView: UIScrollView?
+        var scrollOffset: Binding<CGFloat>
+        var isManuallyScrolling = false
+        
+        init(scrollOffset: Binding<CGFloat>) {
+            self.scrollOffset = scrollOffset
+        }
+        
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            print("DEBUG: [Manual Scroll] BEGIN - offset: \(scrollView.contentOffset.y)")
+            print("DEBUG: [Manual Scroll] contentSize: \(scrollView.contentSize)")
+            print("DEBUG: [Manual Scroll] bounds: \(scrollView.bounds)")
+            isManuallyScrolling = true
+        }
+        
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if isManuallyScrolling {
+                print("DEBUG: [Manual Scroll] SCROLLING - offset: \(scrollView.contentOffset.y)")
+            }
+        }
+        
+        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            if !decelerate {
+                print("DEBUG: [Manual Scroll] END (no decel) - offset: \(scrollView.contentOffset.y)")
+                isManuallyScrolling = false
+                // Sync the binding with current scroll position
+                scrollOffset.wrappedValue = scrollView.contentOffset.y
+                print("DEBUG: [Manual Scroll] Updated binding to: \(scrollOffset.wrappedValue)")
+            }
+        }
+        
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            print("DEBUG: [Manual Scroll] END (with decel) - offset: \(scrollView.contentOffset.y)")
+            isManuallyScrolling = false
+            // Sync the binding with current scroll position
+            scrollOffset.wrappedValue = scrollView.contentOffset.y
+            print("DEBUG: [Manual Scroll] Updated binding to: \(scrollOffset.wrappedValue)")
+        }
+    }
+}
+
+// Preference key for tracking scroll offset (kept for compatibility)
+struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
