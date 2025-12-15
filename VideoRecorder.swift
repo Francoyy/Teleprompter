@@ -46,44 +46,22 @@ class VideoRecorder: NSObject, ObservableObject {
               Resolution: \(activeDims.width)x\(activeDims.height)
               FPS range: \(String(format: "%.2f", activeMinFps))-\(String(format: "%.2f", activeMaxFps))
             """)
-
-            // Dump and summarize all formats
-            print("\n=== FRONT CAMERA: AVAILABLE FORMATS (SENSOR SPACE / LANDSCAPE) ===")
-
-            struct ResKey: Hashable { let w: Int32; let h: Int32 }
-            var uniqueResolutions = Set<ResKey>()
-
-            for (index, format) in videoDevice.formats.enumerated() {
-                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                let range = format.videoSupportedFrameRateRanges.first
-                let minFps = range?.minFrameRate ?? 0
-                let maxFps = range?.maxFrameRate ?? 0
-                let fov = format.videoFieldOfView
-                let mediaSubtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
-                let pixels = Int(dims.width) * Int(dims.height)
-
-                // Aspect ratio in sensor (landscape) orientation
-                let w = Int(dims.width)
-                let h = Int(dims.height)
-                let g = gcd(w, h)
-                let arW = w / g
-                let arH = h / g
-
-                uniqueResolutions.insert(ResKey(w: dims.width, h: dims.height))
-
-                print("""
-                [Format \(index)]
-                  Resolution: \(dims.width)x\(dims.height) (\(pixels) px)
-                  Aspect ratio (sensor/landscape): \(arW):\(arH)
-                  FPS range: \(String(format: "%.2f", minFps)) - \(String(format: "%.2f", maxFps))
-                  FOV: \(String(format: "%.2f", fov))°
-                  PixelFormat (fourCC hex): 0x\(String(format: "%08X", mediaSubtype))
-                """)
+            
+            // Log available formats that support the target FPS
+            let formatsSupporting30Fps = videoDevice.formats.filter { format in
+                guard let range = format.videoSupportedFrameRateRanges.first else { return false }
+                return range.maxFrameRate >= targetFps
             }
 
-            print("=== END FRONT CAMERA FORMATS ===")
-            print("Front camera unique resolutions (sensor/landscape): \(uniqueResolutions.count)")
-            print("Note: Portrait ratios (3:4, 9:16) are just these rotated by orientation, not separate formats.\n")
+            let resolutions = formatsSupporting30Fps.map { format -> String in
+                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                return "\(dims.width)x\(dims.height)"
+            }.joined(separator: ", ")
+
+            print("\n=== FRONT CAMERA: RESOLUTIONS SUPPORTING \(targetFps)fps (SENSOR SPACE / LANDSCAPE) ===")
+            print(resolutions)
+            print("====================================================================================\n")
+
 
             // Pick the highest pixel count format that supports targetFps
             if #available(iOS 13.0, *) {
@@ -103,6 +81,9 @@ class VideoRecorder: NSObject, ObservableObject {
                     do {
                         try videoDevice.lockForConfiguration()
                         videoDevice.activeFormat = bestFormat
+                        
+                        // Lock the frame rate to 30fps. This is the correct way to prevent
+                        // the frame rate from dropping in low light conditions.
                         videoDevice.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(targetFps))
                         videoDevice.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(targetFps))
 
@@ -198,7 +179,6 @@ class VideoRecorder: NSObject, ObservableObject {
         if let connection = videoOutput.connection(with: .video),
            connection.isVideoOrientationSupported {
             connection.videoOrientation = .portrait
-            print("Video connection orientation set to .portrait (display will be vertical).")
         }
 
         // Audio output
@@ -211,191 +191,133 @@ class VideoRecorder: NSObject, ObservableObject {
         }
 
         session.commitConfiguration()
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            self.session.startRunning()
-            print("Capture session running: \(self.session.isRunning)")
-            print("Session activeFormat-based size (sensor): \(self.outputWidth)x\(self.outputHeight)")
-        }
+        
+        // --- ADDED: Start the session after configuration ---
+        startSession()
     }
 
     func startRecording() {
-        // Fallback if for some reason not set
-        if outputWidth == 0 || outputHeight == 0 {
-            if let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                         for: .video,
-                                                         position: .front) {
-                let dims = CMVideoFormatDescriptionGetDimensions(videoDevice.activeFormat.formatDescription)
-                outputWidth = Int(dims.width)
-                outputHeight = Int(dims.height)
-            }
-        }
-
-        // Your logic: compute portrait width from portrait height (3:4)
-        // Sensor is 4032x3024 (4:3 landscape) -> UI is 3:4 portrait -> 2268x3024
-        let originalHeight = outputHeight
-        let newWidth = Int(round(Double(originalHeight) * 3.0 / 4.0))
-        print("Sensor activeFormat (landscape) size: \(outputWidth)x\(outputHeight)")
-        outputWidth = newWidth
-        outputHeight = originalHeight
-        print("Final writer output (portrait 3:4): \(outputWidth)x\(outputHeight)")
-
-        let filename = "native_\(outputWidth)x\(outputHeight)_\(UUID().uuidString).mov"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-        try? FileManager.default.removeItem(at: url)
-        currentOutputURL = url
+        let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+        let documentsDirectory = paths[0]
+        let outputURL = documentsDirectory.appendingPathComponent("\(UUID().uuidString).mov")
+        currentOutputURL = outputURL
 
         do {
-            let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-            self.writer = writer
+            writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
 
+            // Video input settings
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: outputWidth,
-                AVVideoHeightKey: outputHeight
+                AVVideoWidthKey: outputHeight, // Portrait
+                AVVideoHeightKey: outputWidth,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: 6_000_000,
+                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
+                ]
             ]
-            let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            videoInput.expectsMediaDataInRealTime = true
-            self.videoInput = videoInput
-
-            if writer.canAdd(videoInput) {
-                writer.add(videoInput)
+            videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+            videoInput?.expectsMediaDataInRealTime = true
+            if let videoInput = videoInput, writer?.canAdd(videoInput) ?? false {
+                writer?.add(videoInput)
             }
 
-            adaptor = AVAssetWriterInputPixelBufferAdaptor(
-                assetWriterInput: videoInput,
-                sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String:
-                        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-                    kCVPixelBufferWidthKey as String: outputWidth,
-                    kCVPixelBufferHeightKey as String: outputHeight
-                ]
-            )
-
+            // Audio input settings
             let audioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVNumberOfChannelsKey: 1,
-                AVSampleRateKey: 44_100,
-                AVEncoderBitRateKey: 96_000
+                AVSampleRateKey: 44100,
+                AVEncoderBitRateKey: 128000
             ]
-            let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            audioInput.expectsMediaDataInRealTime = true
-            self.audioInput = audioInput
-
-            if writer.canAdd(audioInput) {
-                writer.add(audioInput)
+            audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            audioInput?.expectsMediaDataInRealTime = true
+            if let audioInput = audioInput, writer?.canAdd(audioInput) ?? false {
+                writer?.add(audioInput)
             }
 
-            sessionStartTime = nil
-            writer.startWriting()
+            writer?.startWriting()
+            isRecording = true
 
-            DispatchQueue.main.async {
-                self.isRecording = true
-            }
-
-            print("Started recording to: \(url.lastPathComponent)")
-            print("Recording resolution (writer): \(outputWidth)x\(outputHeight) (portrait 3:4)")
         } catch {
-            print("Error creating AVAssetWriter: \(error)")
-            currentOutputURL = nil
+            print("Error setting up asset writer: \(error)")
+            isRecording = false
         }
     }
 
     func stopRecording(completion: @escaping (URL?) -> Void) {
-        isRecording = false
-        videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
-
-        guard let writer = writer else {
+        guard let writer = writer, isRecording else {
             completion(nil)
             return
         }
 
-        let outputURL = currentOutputURL
+        isRecording = false
+        sessionStartTime = nil
 
         writer.finishWriting { [weak self] in
-            guard let self = self else { return }
+            self?.writer = nil
+            self?.videoInput = nil
+            self?.audioInput = nil
 
-            if writer.status == .completed {
-                print("Finished writing. Temp file: \(outputURL?.absoluteString ?? "nil")")
-                completion(outputURL)
+            if let url = self?.currentOutputURL {
+                print("Video saved to: \(url.path)")
+                DispatchQueue.main.async {
+                    completion(url)
+                }
             } else {
-                print("Writer finished with status: \(writer.status), error: \(String(describing: writer.error))")
-                completion(nil)
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
             }
-
-            self.writer = nil
-            self.videoInput = nil
-            self.audioInput = nil
-            self.adaptor = nil
-            self.currentOutputURL = nil
-            self.sessionStartTime = nil
         }
     }
 
-    private func processVideoBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard isRecording,
-              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let writer = writer,
-              let videoInput = videoInput,
-              videoInput.isReadyForMoreMediaData,
-              let adaptor = adaptor else {
-            return
-        }
-
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-
-        if sessionStartTime == nil {
-            sessionStartTime = timestamp
-            writer.startSession(atSourceTime: timestamp)
-            print("Writer session started at time: \(timestamp.value)/\(timestamp.timescale)")
-        }
-
-        let ok = adaptor.append(imageBuffer, withPresentationTime: timestamp)
-
-        if !ok {
-            print("WARNING: Failed to append video buffer at \(timestamp) (status: \(writer.status)) error: \(String(describing: writer.error))")
+    func startSession() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.session.startRunning()
         }
     }
 
-    private func processAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard isRecording,
-              sessionStartTime != nil,
-              let audioInput = audioInput,
-              audioInput.isReadyForMoreMediaData else {
-            return
-        }
-
-        if !audioInput.append(sampleBuffer) {
-            let ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            print("WARNING: Failed to append audio buffer at time \(ts)")
+    func stopSession() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.session.stopRunning()
         }
     }
 }
 
-// MARK: - Helpers
+extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
 
-private func gcd(_ a: Int, _ b: Int) -> Int {
-    var x = a
-    var y = b
-    while y != 0 {
-        let t = x % y
-        x = y
-        y = t
-    }
-    return x
-}
-
-extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
-                         AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
 
-        if output === videoOutput {
-            processVideoBuffer(sampleBuffer)
-        } else if output === audioOutput {
-            processAudioBuffer(sampleBuffer)
+        guard isRecording, let writer = writer else {
+            return
+        }
+
+        if sessionStartTime == nil {
+            sessionStartTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            writer.startSession(atSourceTime: sessionStartTime!)
+        }
+
+        if output == videoOutput {
+            if let videoInput = videoInput, videoInput.isReadyForMoreMediaData {
+                videoInput.append(sampleBuffer)
+            }
+        } else if output == audioOutput {
+            if let audioInput = audioInput, audioInput.isReadyForMoreMediaData {
+                audioInput.append(sampleBuffer)
+            }
         }
     }
+}
+
+// Helper to find GCD for aspect ratio
+private func gcd(_ a: Int, _ b: Int) -> Int {
+    var a = a
+    var b = b
+    while b != 0 {
+        let temp = b
+        b = a % b
+        a = temp
+    }
+    return a
 }
