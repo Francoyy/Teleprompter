@@ -77,67 +77,54 @@ struct ContentView: View {
                     print("DEBUG: Teleprompter layer appeared")
                 }
                 
-                // LAYER 3: Top control bar (static, no transparency)
+                // LAYER 3: Top control bar
                 VStack {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Teleprompter")
-                                .font(.caption)
-                                .foregroundColor(.white)
-                            Text("Source: \(teleTextSource)")
-                                .font(.caption2)
-                                .foregroundColor(.gray)
-                        }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-                        .background(Color.black.opacity(0.6))
-                        .cornerRadius(4)
-
-                        Spacer()
-
+                    HStack(spacing: 12) {
+                        // Clipboard button (bigger)
                         Button(action: {
                             print("DEBUG: Clipboard button tapped")
                             loadTeleprompterTextFromClipboard(explicitUserAction: true)
                         }) {
                             Image(systemName: "doc.on.clipboard")
-                                .font(.caption)
+                                .font(.title3) // bigger icon
                                 .foregroundColor(.white)
-                                .padding(4)
+                                .padding(8)
                                 .background(Color.black.opacity(0.6))
-                                .cornerRadius(4)
+                                .cornerRadius(6)
                         }
 
-                        HStack(spacing: 4) {
+                        // Speed controls (bigger)
+                        HStack(spacing: 6) {
                             Button(action: {
                                 print("DEBUG: Decrease speed tapped")
                                 autoScroll.decreaseSpeed()
                             }) {
                                 Text("−")
-                                    .font(.caption.bold())
-                                    .frame(width: 20, height: 20)
+                                    .font(.headline.bold())             // bigger symbol
+                                    .frame(width: 28, height: 28)       // bigger tap target
                                     .foregroundColor(.white)
                                     .background(Color.gray.opacity(0.7))
-                                    .cornerRadius(4)
+                                    .cornerRadius(6)
                             }
 
                             Text("\(autoScroll.displaySpeed)")
-                                .font(.caption2)
+                                .font(.headline)                        // larger value
                                 .foregroundColor(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 4)
                                 .background(Color.black.opacity(0.6))
-                                .cornerRadius(4)
+                                .cornerRadius(6)
 
                             Button(action: {
                                 print("DEBUG: Increase speed tapped")
                                 autoScroll.increaseSpeed()
                             }) {
                                 Text("+")
-                                    .font(.caption.bold())
-                                    .frame(width: 20, height: 20)
+                                    .font(.headline.bold())             // bigger symbol
+                                    .frame(width: 28, height: 28)
                                     .foregroundColor(.white)
                                     .background(Color.gray.opacity(0.7))
-                                    .cornerRadius(4)
+                                    .cornerRadius(6)
                             }
 
                             Button(action: {
@@ -145,29 +132,35 @@ struct ContentView: View {
                                 autoScroll.toggle()
                             }) {
                                 Text(autoScroll.isAutoScrolling ? "Stop Auto-Scroll" : "Auto-Scroll")
-                                    .font(.caption)
+                                    .font(.headline)                    // larger text
                                     .foregroundColor(.white)
-                                    .padding(.vertical, 4)
-                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 12)
                                     .background(autoScroll.isAutoScrolling ? Color.red.opacity(0.8) : Color.blue.opacity(0.8))
-                                    .cornerRadius(4)
+                                    .cornerRadius(6)
                             }
                         }
+
+                        Spacer()
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 8)
-                    
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+                    .padding(.bottom, 6)
+                    .background(Color.black.opacity(0.6)) // more opaque top section
+                    // no corner radius: behaves like a bar across the top
+
                     Spacer()
                 }
                 .onAppear {
                     print("DEBUG: Top control bar appeared")
                 }
                 
-                // LAYER 4: Bottom control bar (static, no transparency)
+                // LAYER 4: Bottom control bar
                 VStack {
                     Spacer()
                     
                     VStack(spacing: 6) {
+                        // Centered record/stop button
                         HStack {
                             Spacer()
 
@@ -201,7 +194,8 @@ struct ContentView: View {
                                     }
                                 }
                             }
-                            .padding(.trailing, 8)
+
+                            Spacer()
                         }
 
                         if let saveMessage = saveMessage {
@@ -211,7 +205,7 @@ struct ContentView: View {
                                     .foregroundColor(.white)
                                 Spacer()
                             }
-                            .padding(.leading, 8)
+                            .padding(.horizontal, 8)
                         }
                     }
                     .padding(.vertical, 8)
@@ -321,7 +315,8 @@ struct ContentView: View {
             }, completionHandler: { success, error in
                 print("DEBUG: Save to photos completed. Success: \(success), Error: \(String(describing: error))")
                 DispatchQueue.main.async {
-                    self.saveMessage = success ? "Saved to Photos." : "Failed to save."
+                    // No success message; only show failure
+                    self.saveMessage = success ? nil : "Failed to save."
                 }
             })
         }
