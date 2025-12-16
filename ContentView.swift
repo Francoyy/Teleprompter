@@ -5,7 +5,6 @@ import Photos
 import UIKit
 
 // MARK: - Configuration
-// Adjust this value to change the teleprompter background opacity (0.0 = transparent, 1.0 = opaque)
 private let teleprompterBackgroundOpacity: Double = 0.3
 private let teleprompterFontSize: CGFloat = 40
 
@@ -24,8 +23,7 @@ struct ContentView: View {
     @State private var saveMessage: String?
     @State private var screenHeight: CGFloat = 0
 
-    private let defaultTeleText = """
-    """
+    private let defaultTeleText = ""
 
     @State private var teleText: String = ""
     @State private var teleTextSource: String = "Default"
@@ -38,20 +36,15 @@ struct ContentView: View {
             let _ = DispatchQueue.main.async { self.screenHeight = geo.size.height }
             
             ZStack {
-                // LAYER 1: Full-screen camera preview (bottom layer)
+                // LAYER 1: Full-screen camera preview
                 CameraPreview(session: recorder.session)
                     .ignoresSafeArea()
-                    .onAppear {
-                        print("DEBUG: CameraPreview appeared")
-                    }
                 
-                // LAYER 2: Full-screen teleprompter with semi-transparent background
+                // LAYER 2: Teleprompter
                 ZStack {
-                    // Semi-transparent black background
                     Color.black.opacity(teleprompterBackgroundOpacity)
                         .ignoresSafeArea()
                     
-                    // Scrollable teleprompter text
                     AutoScrollView(contentOffsetY: $autoScroll.contentOffsetY,
                                    isAutoScrolling: autoScroll.isAutoScrolling) {
                         VStack(spacing: 24) {
@@ -69,70 +62,54 @@ struct ContentView: View {
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    .onAppear {
-                        print("DEBUG: AutoScrollView appeared")
-                    }
-                }
-                .onAppear {
-                    print("DEBUG: Teleprompter layer appeared")
                 }
                 
                 // LAYER 3: Top control bar
                 VStack {
                     HStack(spacing: 12) {
-                        // Clipboard button (bigger)
+                        // Clipboard
                         Button(action: {
-                            print("DEBUG: Clipboard button tapped")
                             loadTeleprompterTextFromClipboard(explicitUserAction: true)
                         }) {
                             Image(systemName: "doc.on.clipboard")
-                                .font(.title3) // bigger icon
+                                .font(.title3)
                                 .foregroundColor(.white)
                                 .padding(8)
                                 .background(Color.black.opacity(0.6))
                                 .cornerRadius(6)
                         }
 
-                        // Speed controls (bigger)
+                        // Speed Controls
                         HStack(spacing: 6) {
-                            Button(action: {
-                                print("DEBUG: Decrease speed tapped")
-                                autoScroll.decreaseSpeed()
-                            }) {
+                            Button(action: { autoScroll.decreaseSpeed() }) {
                                 Text("−")
-                                    .font(.headline.bold())             // bigger symbol
-                                    .frame(width: 28, height: 28)       // bigger tap target
-                                    .foregroundColor(.white)
-                                    .background(Color.gray.opacity(0.7))
-                                    .cornerRadius(6)
-                            }
-
-                            Text("\(autoScroll.displaySpeed)")
-                                .font(.headline)                        // larger value
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 4)
-                                .background(Color.black.opacity(0.6))
-                                .cornerRadius(6)
-
-                            Button(action: {
-                                print("DEBUG: Increase speed tapped")
-                                autoScroll.increaseSpeed()
-                            }) {
-                                Text("+")
-                                    .font(.headline.bold())             // bigger symbol
+                                    .font(.headline.bold())
                                     .frame(width: 28, height: 28)
                                     .foregroundColor(.white)
                                     .background(Color.gray.opacity(0.7))
                                     .cornerRadius(6)
                             }
 
-                            Button(action: {
-                                print("DEBUG: Toggle auto-scroll tapped")
-                                autoScroll.toggle()
-                            }) {
+                            Text("\(autoScroll.displaySpeed)")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 4)
+                                .background(Color.black.opacity(0.6))
+                                .cornerRadius(6)
+
+                            Button(action: { autoScroll.increaseSpeed() }) {
+                                Text("+")
+                                    .font(.headline.bold())
+                                    .frame(width: 28, height: 28)
+                                    .foregroundColor(.white)
+                                    .background(Color.gray.opacity(0.7))
+                                    .cornerRadius(6)
+                            }
+
+                            Button(action: { autoScroll.toggle() }) {
                                 Text(autoScroll.isAutoScrolling ? "Stop Auto-Scroll" : "Auto-Scroll")
-                                    .font(.headline)                    // larger text
+                                    .font(.headline)
                                     .foregroundColor(.white)
                                     .padding(.vertical, 6)
                                     .padding(.horizontal, 12)
@@ -140,19 +117,14 @@ struct ContentView: View {
                                     .cornerRadius(6)
                             }
                         }
-
                         Spacer()
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 10)
                     .padding(.bottom, 6)
-                    .background(Color.black.opacity(0.6)) // more opaque top section
-                    // no corner radius: behaves like a bar across the top
+                    .background(Color.black.opacity(0.6))
 
                     Spacer()
-                }
-                .onAppear {
-                    print("DEBUG: Top control bar appeared")
                 }
                 
                 // LAYER 4: Bottom control bar
@@ -160,12 +132,46 @@ struct ContentView: View {
                     Spacer()
                     
                     VStack(spacing: 6) {
-                        // Centered record/stop button
+                        // NEW: Aspect Ratio Selector
+                        if !recorder.isRecording {
+                            HStack(spacing: 20) {
+                                Button(action: {
+                                    recorder.switchAspectRatio(.nineSixteen)
+                                }) {
+                                    Text("9:16")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 30)
+                                        .background(Color.black.opacity(0.5))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(recorder.selectedAspectRatio == .nineSixteen ? Color.blue : Color.gray, lineWidth: 2)
+                                        )
+                                        .cornerRadius(6)
+                                }
+                                
+                                Button(action: {
+                                    recorder.switchAspectRatio(.sixteenNine)
+                                }) {
+                                    Text("16:9")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 30)
+                                        .background(Color.black.opacity(0.5))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(recorder.selectedAspectRatio == .sixteenNine ? Color.blue : Color.gray, lineWidth: 2)
+                                        )
+                                        .cornerRadius(6)
+                                }
+                            }
+                            .padding(.bottom, 6)
+                        }
+
+                        // Record Button
                         HStack {
                             Spacer()
-
                             Button(action: {
-                                print("DEBUG: Record button tapped, isRecording: \(recorder.isRecording)")
                                 if recorder.isRecording {
                                     recorder.stopRecording { url in
                                         guard let url = url else {
@@ -194,10 +200,9 @@ struct ContentView: View {
                                     }
                                 }
                             }
-
                             Spacer()
                         }
-
+                        
                         if let saveMessage = saveMessage {
                             HStack {
                                 Text(saveMessage)
@@ -211,98 +216,52 @@ struct ContentView: View {
                     .padding(.vertical, 8)
                     .background(Color.black.opacity(0.9))
                 }
-                .onAppear {
-                    print("DEBUG: Bottom control bar appeared")
-                }
             }
             .background(Color.black.ignoresSafeArea())
         }
         .onAppear {
-            print("DEBUG: ContentView onAppear START")
             teleText = defaultTeleText
             teleTextSource = "Default"
-            print("DEBUG: Set default teleText")
 
             AVCaptureDevice.requestAccess(for: .video) { videoGranted in
-                print("DEBUG: Video permission granted: \(videoGranted)")
                 AVCaptureDevice.requestAccess(for: .audio) { audioGranted in
-                    print("DEBUG: Audio permission granted: \(audioGranted)")
                     if videoGranted && audioGranted {
                         DispatchQueue.main.async {
-                            print("DEBUG: About to call recorder.setupSession()")
                             recorder.setupSession()
-                            print("DEBUG: recorder.setupSession() completed")
                             
-                            // After a small delay to ensure layout, set initial scroll position
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                 let spacerHeight = self.screenHeight * 0.5
                                 self.autoScroll.contentOffsetY = spacerHeight
-                                print("DEBUG: Set initial scroll position to: \(spacerHeight)")
                             }
                         }
                     }
                 }
             }
-            print("DEBUG: ContentView onAppear END")
         }
         .onDisappear {
-            print("DEBUG: ContentView onDisappear")
             autoScroll.stop()
         }
     }
 
-    // MARK: - Teleprompter text loader
+    // MARK: - Helpers
 
     private func loadTeleprompterTextFromClipboard(explicitUserAction: Bool) {
-        print("DEBUG: loadTeleprompterTextFromClipboard START (explicit: \(explicitUserAction))")
-        
-        // Check if pasteboard has strings
         if UIPasteboard.general.hasStrings {
             let rawClipboard = UIPasteboard.general.string
-            print("DEBUG: Clipboard has strings. Raw value length: \(rawClipboard?.count ?? 0)")
-            print("DEBUG: Clipboard preview: \(rawClipboard?.prefix(100) ?? "nil")")
             
             if let clipboardString = rawClipboard?.trimmingCharacters(in: .whitespacesAndNewlines),
                !clipboardString.isEmpty {
-                // Append to existing text instead of replacing
-                let beforeLength = teleText.count
                 teleText += "\n\n" + clipboardString
-                let afterLength = teleText.count
                 teleTextSource = "Clipboard Added"
-                print("DEBUG: Appended from clipboard. Before: \(beforeLength), After: \(afterLength), Added: \(clipboardString.count)")
-                print("DEBUG: New teleText preview: \(teleText.prefix(200))")
                 
-                // Reset scroll position to the spacer height (where text actually starts)
-                // This positions the first line of text in the middle of the screen
                 let spacerHeight = screenHeight * 0.5
                 autoScroll.contentOffsetY = spacerHeight
-                print("DEBUG: Reset scroll position to spacer height: \(spacerHeight)")
-                
-                if explicitUserAction {
-                    // saveMessage = "Added clipboard text to teleprompter." //we don't want to display any message. to be removed later on
-                }
-            } else {
-                print("DEBUG: Clipboard string was empty after trimming")
-                if explicitUserAction {
-                    // saveMessage = "Clipboard appears empty." //we don't want to display any message. to be removed later on
-                }
-            }
-        } else {
-            print("DEBUG: Clipboard has no strings")
-            if explicitUserAction {
-                // saveMessage = "No text found in clipboard." //we don't want to display any message. to be removed later on
             }
         }
-        
-        print("DEBUG: loadTeleprompterTextFromClipboard END. Current teleText length: \(teleText.count)")
     }
 
-    // MARK: - Save to Photos
-
     private func saveToPhotos(url: URL) {
-        print("DEBUG: saveToPhotos START with URL: \(url)")
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            print("DEBUG: Photos permission status: \(status.rawValue)")
             guard status == .authorized || status == .limited else {
                 DispatchQueue.main.async {
                     self.saveMessage = "Photos permission denied."
@@ -313,9 +272,7 @@ struct ContentView: View {
             PHPhotoLibrary.shared().performChanges({
                 PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
             }, completionHandler: { success, error in
-                print("DEBUG: Save to photos completed. Success: \(success), Error: \(String(describing: error))")
                 DispatchQueue.main.async {
-                    // No success message; only show failure
                     self.saveMessage = success ? nil : "Failed to save."
                 }
             })
