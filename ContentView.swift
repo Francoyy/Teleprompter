@@ -36,23 +36,27 @@ struct ContentView: View {
             let _ = DispatchQueue.main.async { self.screenHeight = geo.size.height }
             
             ZStack {
-                // LAYER 1: Full-screen camera preview + optional 16:9 crop bars
+                // LAYER 1: Camera preview + optional 16:9 crop bars, shifted down
                 GeometryReader { previewGeo in
+                    let verticalOffset: CGFloat = 88  // push preview down so it doesn't go under top bar
+                    
                     ZStack {
+                        // Base camera preview
                         CameraPreview(session: recorder.session)
-                            .ignoresSafeArea()
-
-                        // 16:9 MODE: add black overlays to hide top/bottom,
-                        // leaving only the central ~1701/4032 of the vertical visible.
+                            .frame(
+                                width: previewGeo.size.width,
+                                height: previewGeo.size.height - verticalOffset
+                            )
+                            .offset(y: verticalOffset)
+                            .clipped()
+                        
+                        // 16:9 mask: center visible area, black bars top/bottom
                         if recorder.selectedAspectRatio == .sixteenNine {
-                            let fullSize = previewGeo.size
-                            let fullWidth = fullSize.width
-                            let fullHeight = fullSize.height
+                            let fullWidth = previewGeo.size.width
+                            let fullHeight = previewGeo.size.height - verticalOffset
 
-                            // Desired visible window: 16:9 using the full width
+                            // Desired on-screen visible window: full width, 16:9 height
                             let visibleHeight = fullWidth * 9.0 / 16.0
-
-                            // Clamp in case screen is very short (just in case)
                             let clampedVisibleHeight = min(visibleHeight, fullHeight)
                             let hiddenTotal = fullHeight - clampedVisibleHeight
                             let halfHidden = max(hiddenTotal / 2.0, 0)
@@ -60,17 +64,19 @@ struct ContentView: View {
                             VStack(spacing: 0) {
                                 Color.black
                                     .frame(height: halfHidden)
-                                    .edgesIgnoringSafeArea(.all)
 
                                 Spacer(minLength: 0)
 
                                 Color.black
                                     .frame(height: halfHidden)
-                                    .edgesIgnoringSafeArea(.all)
                             }
+                            .frame(
+                                width: previewGeo.size.width,
+                                height: previewGeo.size.height - verticalOffset
+                            )
+                            .offset(y: verticalOffset)
                             .allowsHitTesting(false)
                         }
-
                     }
                 }
                 .ignoresSafeArea()
@@ -162,14 +168,14 @@ struct ContentView: View {
                     Spacer()
                 }
                 
-                // LAYER 4: Bottom control bar
+                // LAYER 4: Bottom control bar (9:16, 16:9, Record in one row)
                 VStack {
                     Spacer()
                     
                     VStack(spacing: 6) {
-                        // Aspect Ratio Selector
-                        if !recorder.isRecording {
-                            HStack(spacing: 20) {
+                        HStack(spacing: 16) {
+                            // Aspect ratio buttons on the left (only when not recording)
+                            if !recorder.isRecording {
                                 Button(action: {
                                     recorder.switchAspectRatio(.nineSixteen)
                                 }) {
@@ -200,12 +206,10 @@ struct ContentView: View {
                                         .cornerRadius(6)
                                 }
                             }
-                            .padding(.bottom, 6)
-                        }
-
-                        // Record Button
-                        HStack {
+                            
                             Spacer()
+                            
+                            // Record button on the right
                             Button(action: {
                                 if recorder.isRecording {
                                     recorder.stopRecording { url in
@@ -235,8 +239,8 @@ struct ContentView: View {
                                     }
                                 }
                             }
-                            Spacer()
                         }
+                        .padding(.horizontal, 16)
                         
                         if let saveMessage = saveMessage {
                             HStack {
