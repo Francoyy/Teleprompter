@@ -36,9 +36,44 @@ struct ContentView: View {
             let _ = DispatchQueue.main.async { self.screenHeight = geo.size.height }
             
             ZStack {
-                // LAYER 1: Full-screen camera preview
-                CameraPreview(session: recorder.session)
-                    .ignoresSafeArea()
+                // LAYER 1: Full-screen camera preview + optional 16:9 crop bars
+                GeometryReader { previewGeo in
+                    ZStack {
+                        CameraPreview(session: recorder.session)
+                            .ignoresSafeArea()
+
+                        // 16:9 MODE: add black overlays to hide top/bottom,
+                        // leaving only the central ~1701/4032 of the vertical visible.
+                        if recorder.selectedAspectRatio == .sixteenNine {
+                            let fullSize = previewGeo.size
+                            let fullWidth = fullSize.width
+                            let fullHeight = fullSize.height
+
+                            // Desired visible window: 16:9 using the full width
+                            let visibleHeight = fullWidth * 9.0 / 16.0
+
+                            // Clamp in case screen is very short (just in case)
+                            let clampedVisibleHeight = min(visibleHeight, fullHeight)
+                            let hiddenTotal = fullHeight - clampedVisibleHeight
+                            let halfHidden = max(hiddenTotal / 2.0, 0)
+
+                            VStack(spacing: 0) {
+                                Color.black
+                                    .frame(height: halfHidden)
+                                    .edgesIgnoringSafeArea(.all)
+
+                                Spacer(minLength: 0)
+
+                                Color.black
+                                    .frame(height: halfHidden)
+                                    .edgesIgnoringSafeArea(.all)
+                            }
+                            .allowsHitTesting(false)
+                        }
+
+                    }
+                }
+                .ignoresSafeArea()
                 
                 // LAYER 2: Teleprompter
                 ZStack {
@@ -132,7 +167,7 @@ struct ContentView: View {
                     Spacer()
                     
                     VStack(spacing: 6) {
-                        // NEW: Aspect Ratio Selector
+                        // Aspect Ratio Selector
                         if !recorder.isRecording {
                             HStack(spacing: 20) {
                                 Button(action: {
