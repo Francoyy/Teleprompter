@@ -258,9 +258,9 @@ class VideoRecorder: NSObject, ObservableObject {
             // Audio
             let audioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVNumberOfChannelsKey: 1,
+                AVNumberOfChannelsKey: 2,
                 AVSampleRateKey: 44100,
-                AVEncoderBitRateKey: 64000
+                AVEncoderBitRateKey: 128000
             ]
             audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             audioInput?.expectsMediaDataInRealTime = true
