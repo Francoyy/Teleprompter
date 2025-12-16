@@ -27,6 +27,8 @@ struct ContentView: View {
 
     @State private var teleText: String = ""
     @State private var teleTextSource: String = "Default"
+    
+    @State private var showClipboardToast = false
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasAttemptedInitialClipboardLoad = false
@@ -271,6 +273,23 @@ struct ContentView: View {
                             .shadow(color: .black, radius: 1, x: 1, y: 1)
                     }
                 }
+                
+                // LAYER 6: Toast Notification
+                if showClipboardToast {
+                    VStack {
+                        Spacer()
+                        Text("Clipboard is empty")
+                            .font(.body)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Color.black.opacity(0.8))
+                            .cornerRadius(10)
+                            .padding(.bottom, 150)
+                    }
+                    .transition(.opacity)
+                    .zIndex(100)
+                }
             }
             .background(Color.black.ignoresSafeArea())
         }
@@ -308,16 +327,29 @@ struct ContentView: View {
     // MARK: - Helpers
 
     private func loadTeleprompterTextFromClipboard(explicitUserAction: Bool) {
+        var didPaste = false
         if UIPasteboard.general.hasStrings {
             let rawClipboard = UIPasteboard.general.string
             
             if let clipboardString = rawClipboard?.trimmingCharacters(in: .whitespacesAndNewlines),
                !clipboardString.isEmpty {
-                teleText += "\n\n" + clipboardString
-                teleTextSource = "Clipboard Added"
+                teleText = clipboardString // Replaces entire text
+                teleTextSource = "Clipboard"
                 
                 let spacerHeight = screenHeight * 0.5
                 autoScroll.contentOffsetY = spacerHeight
+                didPaste = true
+            }
+        }
+        
+        if !didPaste {
+            withAnimation {
+                showClipboardToast = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                withAnimation {
+                    showClipboardToast = false
+                }
             }
         }
     }
