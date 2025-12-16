@@ -30,6 +30,10 @@ struct ContentView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasAttemptedInitialClipboardLoad = false
+    
+    // MARK: - Timer State
+    @State private var recordingDuration: TimeInterval = 0
+    @State private var recordingTimer: Timer?
 
     var body: some View {
         GeometryReader { geo in
@@ -113,11 +117,11 @@ struct ContentView: View {
                             loadTeleprompterTextFromClipboard(explicitUserAction: true)
                         }) {
                             Image(systemName: "doc.on.clipboard")
-                                .font(.title3)
-                                .foregroundColor(.white)
-                                .padding(8)
-                                .background(Color.black.opacity(0.6))
-                                .cornerRadius(6)
+                            .font(.title3)
+                            .foregroundColor(.white)
+                            .padding(8)
+                            .background(Color.black.opacity(0.6))
+                            .cornerRadius(6)
                         }
 
                         // Speed Controls
@@ -255,6 +259,18 @@ struct ContentView: View {
                     .padding(.vertical, 8)
                     .background(Color.black.opacity(0.9))
                 }
+                
+                // LAYER 5: Recording Timer Overlay
+                if recorder.isRecording {
+                    VStack {
+                        Spacer()
+                        Text(formattedDuration(recordingDuration))
+                            .font(.system(size: 24, weight: .bold, design: .monospaced))
+                            .foregroundColor(.red)
+                            .padding(.bottom, 120)
+                            .shadow(color: .black, radius: 1, x: 1, y: 1)
+                    }
+                }
             }
             .background(Color.black.ignoresSafeArea())
         }
@@ -279,6 +295,13 @@ struct ContentView: View {
         }
         .onDisappear {
             autoScroll.stop()
+        }
+        .onChange(of: recorder.isRecording) { isRecording in
+            if isRecording {
+                startTimer()
+            } else {
+                stopTimer()
+            }
         }
     }
 
@@ -316,5 +339,27 @@ struct ContentView: View {
                 }
             })
         }
+    }
+    
+    // MARK: - Timer Helpers
+    
+    private func startTimer() {
+        stopTimer()
+        recordingDuration = 0
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            self.recordingDuration += 1
+        }
+    }
+
+    private func stopTimer() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+    }
+
+    private func formattedDuration(_ totalSeconds: TimeInterval) -> String {
+        let seconds = Int(totalSeconds) % 60
+        let minutes = Int(totalSeconds) / 60 % 60
+        let hours = Int(totalSeconds) / 3600
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
