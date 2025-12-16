@@ -78,7 +78,6 @@ class VideoRecorder: NSObject, ObservableObject {
                 let audioIn = try AVCaptureDeviceInput(device: audioDevice)
                 if session.canAddInput(audioIn) { session.addInput(audioIn) }
             } catch {
-                print("Error audio input: \(error)")
             }
         }
         
@@ -120,7 +119,6 @@ class VideoRecorder: NSObject, ObservableObject {
                 session.addInput(input)
             }
         } catch {
-            print("Error adding video input: \(error)")
             return
         }
         
@@ -164,9 +162,7 @@ class VideoRecorder: NSObject, ObservableObject {
                 nativeFormatWidth = Int(dims.width)
                 nativeFormatHeight = Int(dims.height)
                 
-                print("✅ [Aspect: \(ratio)] Format: \(nativeFormatWidth)x\(nativeFormatHeight)")
             } catch {
-                print("Error configuring format: \(error)")
             }
         }
         
@@ -176,7 +172,6 @@ class VideoRecorder: NSObject, ObservableObject {
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoOrientationSupported {
                 connection.videoOrientation = .portrait
-                print("🔄 Connection forced to Portrait")
             }
         }
     }
@@ -244,7 +239,6 @@ class VideoRecorder: NSObject, ObservableObject {
                     AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
                 ]
                 
-                print("🎥 Recording 16:9 -> \(outputWidth)x\(outputHeight) (Crop)")
             }
             
             videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
@@ -274,7 +268,6 @@ class VideoRecorder: NSObject, ObservableObject {
             sessionStartTime = nil
             
         } catch {
-            print("Error setting up writer: \(error)")
         }
     }
 

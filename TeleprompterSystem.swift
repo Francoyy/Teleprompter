@@ -18,18 +18,14 @@ final class AutoScrollController: ObservableObject {
     let step: CGFloat = 0.1       // +/-1 in UI
 
     init() {
-        print("DEBUG: AutoScrollController init")
     }
 
     func toggle() {
-        print("DEBUG: AutoScrollController toggle() called, current state: \(isAutoScrolling)")
         isAutoScrolling ? stop() : start()
     }
 
     func start() {
-        print("DEBUG: AutoScrollController start() called")
         guard !isAutoScrolling else {
-            print("DEBUG: Already auto-scrolling, returning")
             return
         }
         isAutoScrolling = true
@@ -47,30 +43,23 @@ final class AutoScrollController: ObservableObject {
         if let timer = autoScrollTimer {
             RunLoop.main.add(timer, forMode: .common)
         }
-
-        print("AutoScrollController.start() - tickInterval=\(tickInterval) speed=\(autoScrollSpeed)")
     }
 
     func stop() {
-        print("DEBUG: AutoScrollController stop() called")
         guard isAutoScrolling else {
-            print("DEBUG: Already stopped, returning")
             return
         }
         isAutoScrolling = false
         autoScrollTimer?.invalidate()
         autoScrollTimer = nil
-        print("AutoScrollController.stop()")
     }
 
     func increaseSpeed() {
         autoScrollSpeed = min(maxSpeed, (autoScrollSpeed + step).rounded(toPlaces: 2))
-        print("increaseSpeed -> \(autoScrollSpeed)")
     }
 
     func decreaseSpeed() {
         autoScrollSpeed = max(minSpeed, (autoScrollSpeed - step).rounded(toPlaces: 2))
-        print("decreaseSpeed -> \(autoScrollSpeed)")
     }
 
     // Display value 1–20 for the UI
@@ -80,7 +69,6 @@ final class AutoScrollController: ObservableObject {
 
     deinit {
         autoScrollTimer?.invalidate()
-        print("AutoScrollController deinit")
     }
 }
 
@@ -104,11 +92,9 @@ struct AutoScrollView<Content: View>: View {
         self._contentOffsetY = contentOffsetY
         self.isAutoScrolling = isAutoScrolling
         self.content = content
-        print("DEBUG: AutoScrollView init")
     }
 
     var body: some View {
-        print("DEBUG: AutoScrollView body computed, contentOffsetY: \(contentOffsetY)")
         return GeometryReader { proxy in
             CustomScrollView(scrollOffset: $contentOffsetY, screenHeight: proxy.size.height) {
                 VStack(spacing: 0) {
@@ -165,7 +151,6 @@ struct CustomScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.hostingController = hostingController
         context.coordinator.scrollView = scrollView
         
-        print("DEBUG: CustomScrollView makeUIView")
         return scrollView
     }
     
@@ -194,64 +179,45 @@ struct CustomScrollView<Content: View>: UIViewRepresentable {
             let targetY = scrollOffset
             
             if abs(scrollView.contentOffset.y - targetY) > 0.1 {
-                print("DEBUG: [ScrollView] Setting scroll offset from \(scrollView.contentOffset.y) to \(targetY)")
                 scrollView.contentOffset.y = targetY
-                print("DEBUG: [ScrollView] After setting, actual offset: \(scrollView.contentOffset.y)")
             }
         }
     }
     
     func makeCoordinator() -> Coordinator {
-        Coordinator(scrollOffset: $scrollOffset)
+        Coordinator(self)
     }
     
     class Coordinator: NSObject, UIScrollViewDelegate {
+        var parent: CustomScrollView
         var hostingController: UIHostingController<Content>?
         var scrollView: UIScrollView?
-        var scrollOffset: Binding<CGFloat>
         var isManuallyScrolling = false
         
-        init(scrollOffset: Binding<CGFloat>) {
-            self.scrollOffset = scrollOffset
+        init(_ parent: CustomScrollView) {
+            self.parent = parent
         }
         
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-            print("DEBUG: [Manual Scroll] BEGIN - offset: \(scrollView.contentOffset.y)")
-            print("DEBUG: [Manual Scroll] contentSize: \(scrollView.contentSize)")
-            print("DEBUG: [Manual Scroll] bounds: \(scrollView.bounds)")
             isManuallyScrolling = true
-        }
-        
-        func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            if isManuallyScrolling {
-                print("DEBUG: [Manual Scroll] SCROLLING - offset: \(scrollView.contentOffset.y)")
-            }
         }
         
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
-                print("DEBUG: [Manual Scroll] END (no decel) - offset: \(scrollView.contentOffset.y)")
                 isManuallyScrolling = false
-                // Sync the binding with current scroll position
-                scrollOffset.wrappedValue = scrollView.contentOffset.y
-                print("DEBUG: [Manual Scroll] Updated binding to: \(scrollOffset.wrappedValue)")
+                parent.scrollOffset = scrollView.contentOffset.y
             }
         }
         
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-            print("DEBUG: [Manual Scroll] END (with decel) - offset: \(scrollView.contentOffset.y)")
             isManuallyScrolling = false
-            // Sync the binding with current scroll position
-            scrollOffset.wrappedValue = scrollView.contentOffset.y
-            print("DEBUG: [Manual Scroll] Updated binding to: \(scrollOffset.wrappedValue)")
+            parent.scrollOffset = scrollView.contentOffset.y
         }
-    }
-}
-
-// Preference key for tracking scroll offset (kept for compatibility)
-struct ScrollOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if isManuallyScrolling {
+                parent.scrollOffset = scrollView.contentOffset.y
+            }
+        }
     }
 }

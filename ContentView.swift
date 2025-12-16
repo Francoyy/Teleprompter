@@ -89,7 +89,8 @@ struct ContentView: View {
                 
                 // LAYER 2: Teleprompter
                 ZStack {
-                    Color.black.opacity(teleprompterBackgroundOpacity)
+                    // Only apply opacity if there is text content
+                    Color.black.opacity(teleText.isEmpty ? 0 : teleprompterBackgroundOpacity)
                         .ignoresSafeArea()
                     
                     AutoScrollView(contentOffsetY: $autoScroll.contentOffsetY,
