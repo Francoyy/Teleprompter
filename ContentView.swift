@@ -6,7 +6,6 @@ import UIKit
 
 // MARK: - Configuration
 private let teleprompterBackgroundOpacity: Double = 0.3
-private let teleprompterFontSize: CGFloat = 40
 
 @main
 struct Yuan_Teleprompter2App: App {
@@ -33,6 +32,9 @@ struct ContentView: View {
     // Settings UI state
     @State private var isShowingSettings = false
 
+    // Teleprompter font size (now user‑adjustable)
+    @State private var teleprompterFontSize: CGFloat = 40
+    
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasAttemptedInitialClipboardLoad = false
     
@@ -66,7 +68,6 @@ struct ContentView: View {
                             let fullWidth = previewGeo.size.width
                             let fullHeight = previewGeo.size.height
 
-                            // Visible 16:9 window based on full width
                             let visibleHeight = fullWidth * 9.0 / 16.0
                             let clampedVisibleHeight = min(visibleHeight, fullHeight)
                             let hiddenTotal = fullHeight - clampedVisibleHeight
@@ -93,7 +94,6 @@ struct ContentView: View {
                 
                 // LAYER 2: Teleprompter
                 ZStack {
-                    // Only apply opacity if there is text content
                     Color.black.opacity(teleText.isEmpty ? 0 : teleprompterBackgroundOpacity)
                         .ignoresSafeArea()
                     
@@ -119,7 +119,7 @@ struct ContentView: View {
                 // LAYER 3: Top control bar
                 VStack {
                     HStack(spacing: 12) {
-                        // 1. Clipboard Button
+                        // Clipboard Button
                         Button(action: {
                             loadTeleprompterTextFromClipboard(explicitUserAction: true)
                         }) {
@@ -131,7 +131,7 @@ struct ContentView: View {
                             .font(.caption.bold())
                             .foregroundColor(.white)
                             .padding(.horizontal, 10)
-                            .frame(height: 44) // Fixed height for alignment
+                            .frame(height: 44)
                             .background(Color.black.opacity(0.5))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
@@ -140,9 +140,8 @@ struct ContentView: View {
                             .cornerRadius(6)
                         }
 
-                        // 2. Speed & Auto Scroll (only when teleprompter has content)
+                        // Speed & Auto Scroll
                         if !teleText.isEmpty {
-                            // Speed Controls (compact, same height & border style)
                             HStack(spacing: 0) {
                                 Button(action: { autoScroll.decreaseSpeed() }) {
                                     Text("−")
@@ -174,7 +173,6 @@ struct ContentView: View {
                             )
                             .cornerRadius(6)
 
-                            // Auto Scroll Button
                             Button(action: { autoScroll.toggle() }) {
                                 Text("Auto\nScroll")
                                     .font(.caption.bold())
@@ -194,9 +192,8 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // 4. Settings Button (gear icon, top-right)
+                        // Settings Button (gear icon, top-right)
                         Button(action: {
-                            // Only allow opening settings when NOT recording
                             if !recorder.isRecording {
                                 isShowingSettings = true
                             }
@@ -212,7 +209,7 @@ struct ContentView: View {
                                 )
                                 .cornerRadius(6)
                         }
-                        .disabled(recorder.isRecording)   // disable while recording
+                        .disabled(recorder.isRecording)
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 10)
@@ -230,7 +227,6 @@ struct ContentView: View {
                         HStack {
                             Spacer()
                             
-                            // Centered record button
                             Button(action: {
                                 if recorder.isRecording {
                                     recorder.stopRecording { url in
@@ -242,7 +238,6 @@ struct ContentView: View {
                                     }
                                 } else {
                                     recorder.startRecording()
-                                    // Close settings if open when recording starts
                                     isShowingSettings = false
                                 }
                             }) {
@@ -310,13 +305,13 @@ struct ContentView: View {
                     .zIndex(100)
                 }
                 
-                // LAYER 7: Settings Floating Window (includes single-line Aspect Ratio)
+                // LAYER 7: Settings Floating Window
                 if isShowingSettings {
                     VStack {
                         Spacer()
                         
                         VStack(alignment: .leading, spacing: 16) {
-                            // Header: title + close
+                            // Header
                             HStack {
                                 Text("Settings:")
                                     .font(.headline)
@@ -333,13 +328,12 @@ struct ContentView: View {
                                 }
                             }
                             
-                            // Aspect Ratio row (single line)
+                            // Aspect Ratio row
                             HStack(spacing: 8) {
                                 Text("Aspect Ratio:")
                                     .font(.subheadline)
                                     .foregroundColor(.white)
                                 
-                                // 9:16 button
                                 Button(action: {
                                     recorder.switchAspectRatio(.nineSixteen)
                                 }) {
@@ -359,9 +353,8 @@ struct ContentView: View {
                                         )
                                         .cornerRadius(6)
                                 }
-                                .disabled(recorder.isRecording) // safety: disabled while recording
+                                .disabled(recorder.isRecording)
                                 
-                                // 16:9 button
                                 Button(action: {
                                     recorder.switchAspectRatio(.sixteenNine)
                                 }) {
@@ -381,7 +374,54 @@ struct ContentView: View {
                                         )
                                         .cornerRadius(6)
                                 }
-                                .disabled(recorder.isRecording) // safety: disabled while recording
+                                .disabled(recorder.isRecording)
+                                
+                                Spacer()
+                            }
+                            
+                            // NEW: Teleprompter text size row
+                            HStack(spacing: 8) {
+                                Text("Teleprompter text size:")
+                                    .font(.subheadline)
+                                    .foregroundColor(.white)
+                                
+                                HStack(spacing: 0) {
+                                    Button(action: {
+                                        withAnimation(.easeInOut(duration: 0.1)) {
+                                            teleprompterFontSize = max(20, teleprompterFontSize - 2)
+                                        }
+                                    }) {
+                                        Text("−")
+                                            .font(.headline.bold())
+                                            .frame(width: 26, height: 32)
+                                            .contentShape(Rectangle())
+                                    }
+                                    
+                                    Text("\(Int(teleprompterFontSize))")
+                                        .font(.caption.bold())
+                                        .multilineTextAlignment(.center)
+                                        .frame(width: 40, height: 32)
+                                    
+                                    Button(action: {
+                                        withAnimation(.easeInOut(duration: 0.1)) {
+                                            teleprompterFontSize = min(80, teleprompterFontSize + 2)
+                                        }
+                                    }) {
+                                        Text("+")
+                                            .font(.headline.bold())
+                                            .frame(width: 26, height: 32)
+                                            .contentShape(Rectangle())
+                                    }
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 4)
+                                .background(Color.black.opacity(0.5))
+                                .frame(height: 32)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.gray, lineWidth: 2)
+                                )
+                                .cornerRadius(6)
                                 
                                 Spacer()
                             }
@@ -391,7 +431,7 @@ struct ContentView: View {
                         .padding(16)
                         .frame(
                             width: min(geo.size.width * 0.85, 360),
-                            height: min(geo.size.height * 0.4, 260)
+                            height: min(geo.size.height * 0.45, 300)
                         )
                         .background(Color.black.opacity(0.9))
                         .cornerRadius(16)
@@ -402,7 +442,7 @@ struct ContentView: View {
                         
                         Spacer()
                     }
-                    .zIndex(200) // above everything else
+                    .zIndex(200)
                 }
             }
             .background(Color.black.ignoresSafeArea())
@@ -431,7 +471,6 @@ struct ContentView: View {
         }
         .onChange(of: recorder.isRecording) { isRecording in
             if isRecording {
-                // Ensure settings panel is closed if recording starts from elsewhere
                 isShowingSettings = false
                 startTimer()
             } else {
@@ -449,7 +488,7 @@ struct ContentView: View {
             
             if let clipboardString = rawClipboard?.trimmingCharacters(in: .whitespacesAndNewlines),
                !clipboardString.isEmpty {
-                teleText = clipboardString // Replaces entire text
+                teleText = clipboardString
                 teleTextSource = "Clipboard"
                 
                 let spacerHeight = screenHeight * 0.5
