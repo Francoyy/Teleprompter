@@ -29,6 +29,27 @@ class VideoRecorder: NSObject, ObservableObject {
     private var currentOutputURL: URL?
     private var sessionStartTime: CMTime?
     
+    // MARK: - Optional: Audio Session Configuration (iOS / visionOS)
+    /// Configure AVAudioSession so the system's audio stack is in a sane
+    /// state before using AVCapture audio. This can reduce internal
+    /// FigAudioSession warnings.
+    private func configureAudioSessionIfNeeded() {
+        #if os(iOS) || os(tvOS) || os(visionOS)
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            // playAndRecord allows microphone + playback, mode tuned for video.
+            try audioSession.setCategory(.playAndRecord,
+                                         mode: .videoRecording,
+                                         options: [.defaultToSpeaker, .allowBluetooth])
+            try audioSession.setActive(true)
+        } catch {
+            // We don't surface this to the user; failure just means we might
+            // see some extra internal warnings.
+            print("AVAudioSession configuration failed: \(error)")
+        }
+        #endif
+    }
+
     // MARK: - Camera Selection
     func getBestFrontCamera() -> AVCaptureDevice? {
         // STRICT PRIORITY: Ultra Wide First
@@ -54,6 +75,9 @@ class VideoRecorder: NSObject, ObservableObject {
 
     // MARK: - Session Setup
     func setupSession() {
+        // NEW: ensure audio session is in a reasonable state before capture.
+        configureAudioSessionIfNeeded()
+
         session.beginConfiguration()
         session.sessionPreset = .inputPriority // Allow manual format
 
@@ -270,7 +294,7 @@ class VideoRecorder: NSObject, ObservableObject {
         } catch {
         }
     }
-
+    
     func stopRecording(completion: @escaping (URL?) -> Void) {
         guard let writer = writer, isRecording else {
             completion(nil)

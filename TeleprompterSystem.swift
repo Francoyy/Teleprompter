@@ -155,22 +155,16 @@ struct CustomScrollView<Content: View>: UIViewRepresentable {
     }
     
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
-        // Update content and force layout first
+        // Update content and let Auto Layout handle contentSize
         if let hostingController = context.coordinator.hostingController {
             hostingController.rootView = content()
             
-            // FIX: Invalidate intrinsic content size to ensure the view resizes
-            // to fit the new content (e.g., long pasted text).
+            // Let the view know its intrinsic size might have changed.
             hostingController.view.invalidateIntrinsicContentSize()
-            
             hostingController.view.setNeedsLayout()
-            hostingController.view.layoutIfNeeded()
-            
-            // FIX: Removed manual assignment of scrollView.contentSize.
-            // We rely on Auto Layout constraints (pinned edges) to calculate the
-            // content size automatically. Manually setting it here was causing
-            // the content to be clipped or centered incorrectly when the size
-            // calculation happened before the view fully expanded.
+            // IMPORTANT CHANGE:
+            // We no longer call layoutIfNeeded() here to avoid large,
+            // synchronous layout passes during user gestures.
         }
         
         // Only update scroll position if we're programmatically controlling it

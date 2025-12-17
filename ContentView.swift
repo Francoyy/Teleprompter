@@ -29,6 +29,9 @@ struct ContentView: View {
     @State private var teleTextSource: String = "Default"
     
     @State private var showClipboardToast = false
+    
+    // Settings UI state
+    @State private var isShowingSettings = false
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasAttemptedInitialClipboardLoad = false
@@ -115,57 +118,97 @@ struct ContentView: View {
                 // LAYER 3: Top control bar
                 VStack {
                     HStack(spacing: 12) {
-                        // Clipboard
+                        // 1. Clipboard Button
                         Button(action: {
                             loadTeleprompterTextFromClipboard(explicitUserAction: true)
                         }) {
-                            Image(systemName: "doc.on.clipboard")
-                            .font(.title3)
+                            HStack(spacing: 6) {
+                                Image(systemName: "doc.on.clipboard")
+                                Text("Paste from\nClipboard")
+                                    .multilineTextAlignment(.leading)
+                            }
+                            .font(.caption.bold())
                             .foregroundColor(.white)
-                            .padding(8)
-                            .background(Color.black.opacity(0.6))
+                            .padding(.horizontal, 10)
+                            .frame(height: 44) // Fixed height for alignment
+                            .background(Color.black.opacity(0.5))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.gray, lineWidth: 2)
+                            )
                             .cornerRadius(6)
                         }
 
-                        // Speed Controls
-                        HStack(spacing: 6) {
-                            Button(action: { autoScroll.decreaseSpeed() }) {
-                                Text("−")
-                                    .font(.headline.bold())
-                                    .frame(width: 28, height: 28)
-                                    .foregroundColor(.white)
-                                    .background(Color.gray.opacity(0.7))
-                                    .cornerRadius(6)
+                        // 2. Speed & Auto Scroll (only when teleprompter has content)
+                        if !teleText.isEmpty {
+                            // Speed Controls (compact, same height & border style)
+                            HStack(spacing: 0) {
+                                Button(action: { autoScroll.decreaseSpeed() }) {
+                                    Text("−")
+                                        .font(.headline.bold())
+                                        .frame(width: 26, height: 44)
+                                        .contentShape(Rectangle())
+                                }
+
+                                Text("Speed\n\(autoScroll.displaySpeed)")
+                                    .font(.caption2.bold())
+                                    .multilineTextAlignment(.center)
+                                    .frame(width: 46)
+                                    .lineLimit(2)
+
+                                Button(action: { autoScroll.increaseSpeed() }) {
+                                    Text("+")
+                                        .font(.headline.bold())
+                                        .frame(width: 26, height: 44)
+                                        .contentShape(Rectangle())
+                                }
                             }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 4)
+                            .background(Color.black.opacity(0.5))
+                            .frame(height: 44)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.gray, lineWidth: 2)
+                            )
+                            .cornerRadius(6)
 
-                            Text("\(autoScroll.displaySpeed)")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 4)
-                                .background(Color.black.opacity(0.6))
-                                .cornerRadius(6)
-
-                            Button(action: { autoScroll.increaseSpeed() }) {
-                                Text("+")
-                                    .font(.headline.bold())
-                                    .frame(width: 28, height: 28)
-                                    .foregroundColor(.white)
-                                    .background(Color.gray.opacity(0.7))
-                                    .cornerRadius(6)
-                            }
-
+                            // Auto Scroll Button
                             Button(action: { autoScroll.toggle() }) {
-                                Text(autoScroll.isAutoScrolling ? "Stop Auto-Scroll" : "Auto-Scroll")
-                                    .font(.headline)
+                                Text("Auto\nScroll")
+                                    .font(.caption.bold())
+                                    .multilineTextAlignment(.center)
                                     .foregroundColor(.white)
-                                    .padding(.vertical, 6)
-                                    .padding(.horizontal, 12)
-                                    .background(autoScroll.isAutoScrolling ? Color.red.opacity(0.8) : Color.blue.opacity(0.8))
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 44)
+                                    .background(Color.black.opacity(0.5))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(autoScroll.isAutoScrolling ? Color.blue : Color.gray,
+                                                    lineWidth: 2)
+                                    )
                                     .cornerRadius(6)
                             }
                         }
+                        
                         Spacer()
+                        
+                        // 4. Settings Button (gear icon, top-right)
+                        Button(action: {
+                            // No animation, just present instantly
+                            isShowingSettings = true
+                        }) {
+                            Image(systemName: "gearshape.fill")
+                                .font(.title3)
+                                .foregroundColor(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Color.black.opacity(0.5))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.gray, lineWidth: 2)
+                                )
+                                .cornerRadius(6)
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 10)
@@ -290,6 +333,49 @@ struct ContentView: View {
                     }
                     .transition(.opacity)
                     .zIndex(100)
+                }
+                
+                // LAYER 7: Settings Floating Window (highest priority, no background overlay)
+                if isShowingSettings {
+                    VStack {
+                        Spacer()
+                        
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Settings:")
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                                
+                                Spacer()
+                                
+                                Button(action: {
+                                    // Close instantly, no animation
+                                    isShowingSettings = false
+                                }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            
+                            // Placeholder for future settings content
+                            Spacer(minLength: 0)
+                        }
+                        .padding(16)
+                        .frame(
+                            width: min(geo.size.width * 0.85, 360),
+                            height: min(geo.size.height * 0.4, 260)
+                        )
+                        .background(Color.black.opacity(0.9))
+                        .cornerRadius(16)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(Color.gray.opacity(0.7), lineWidth: 1.5)
+                        )
+                        
+                        Spacer()
+                    }
+                    .zIndex(200) // above everything else
                 }
             }
             .background(Color.black.ignoresSafeArea())
