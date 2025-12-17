@@ -45,26 +45,28 @@ struct ContentView: View {
             let _ = DispatchQueue.main.async { self.screenHeight = geo.size.height }
             
             ZStack {
-                // LAYER 1: Camera preview + optional 16:9 crop bars, shifted down
+                // LAYER 1: Camera preview + optional 16:9 crop bars
                 GeometryReader { previewGeo in
-                    let verticalOffset: CGFloat = 88  // push preview down so it doesn't go under top bar
+                    let verticalOffset: CGFloat = 88  // used for 9:16 layout (original behavior)
                     
                     ZStack {
                         // Base camera preview
                         CameraPreview(session: recorder.session)
                             .frame(
                                 width: previewGeo.size.width,
-                                height: previewGeo.size.height - verticalOffset
+                                height: recorder.selectedAspectRatio == .nineSixteen
+                                    ? (previewGeo.size.height - verticalOffset)
+                                    : previewGeo.size.height
                             )
-                            .offset(y: verticalOffset)
+                            .offset(y: recorder.selectedAspectRatio == .nineSixteen ? verticalOffset : 0)
                             .clipped()
                         
-                        // 16:9 mask: center visible area, black bars top/bottom
+                        // 16:9 mask: center visible 16:9 window vertically in screen
                         if recorder.selectedAspectRatio == .sixteenNine {
                             let fullWidth = previewGeo.size.width
-                            let fullHeight = previewGeo.size.height - verticalOffset
+                            let fullHeight = previewGeo.size.height
 
-                            // Desired on-screen visible window: full width, 16:9 height
+                            // Visible 16:9 window based on full width
                             let visibleHeight = fullWidth * 9.0 / 16.0
                             let clampedVisibleHeight = min(visibleHeight, fullHeight)
                             let hiddenTotal = fullHeight - clampedVisibleHeight
@@ -81,9 +83,8 @@ struct ContentView: View {
                             }
                             .frame(
                                 width: previewGeo.size.width,
-                                height: previewGeo.size.height - verticalOffset
+                                height: previewGeo.size.height
                             )
-                            .offset(y: verticalOffset)
                             .allowsHitTesting(false)
                         }
                     }
@@ -195,12 +196,14 @@ struct ContentView: View {
                         
                         // 4. Settings Button (gear icon, top-right)
                         Button(action: {
-                            // No animation, just present instantly
-                            isShowingSettings = true
+                            // Only allow opening settings when NOT recording
+                            if !recorder.isRecording {
+                                isShowingSettings = true
+                            }
                         }) {
                             Image(systemName: "gearshape.fill")
                                 .font(.title3)
-                                .foregroundColor(.white)
+                                .foregroundColor(recorder.isRecording ? Color.gray.opacity(0.5) : .white)
                                 .frame(width: 44, height: 44)
                                 .background(Color.black.opacity(0.5))
                                 .overlay(
@@ -209,6 +212,7 @@ struct ContentView: View {
                                 )
                                 .cornerRadius(6)
                         }
+                        .disabled(recorder.isRecording)   // disable while recording
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 10)
@@ -218,48 +222,15 @@ struct ContentView: View {
                     Spacer()
                 }
                 
-                // LAYER 4: Bottom control bar (9:16, 16:9, Record in one row)
+                // LAYER 4: Bottom control bar (Record centered)
                 VStack {
                     Spacer()
                     
                     VStack(spacing: 6) {
-                        HStack(spacing: 16) {
-                            // Aspect ratio buttons on the left (only when not recording)
-                            if !recorder.isRecording {
-                                Button(action: {
-                                    recorder.switchAspectRatio(.nineSixteen)
-                                }) {
-                                    Text("9:16")
-                                        .font(.caption.bold())
-                                        .foregroundColor(.white)
-                                        .frame(width: 50, height: 30)
-                                        .background(Color.black.opacity(0.5))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(recorder.selectedAspectRatio == .nineSixteen ? Color.blue : Color.gray, lineWidth: 2)
-                                        )
-                                        .cornerRadius(6)
-                                }
-                                
-                                Button(action: {
-                                    recorder.switchAspectRatio(.sixteenNine)
-                                }) {
-                                    Text("16:9")
-                                        .font(.caption.bold())
-                                        .foregroundColor(.white)
-                                        .frame(width: 50, height: 30)
-                                        .background(Color.black.opacity(0.5))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(recorder.selectedAspectRatio == .sixteenNine ? Color.blue : Color.gray, lineWidth: 2)
-                                        )
-                                        .cornerRadius(6)
-                                }
-                            }
-                            
+                        HStack {
                             Spacer()
                             
-                            // Record button on the right
+                            // Centered record button
                             Button(action: {
                                 if recorder.isRecording {
                                     recorder.stopRecording { url in
@@ -271,6 +242,8 @@ struct ContentView: View {
                                     }
                                 } else {
                                     recorder.startRecording()
+                                    // Close settings if open when recording starts
+                                    isShowingSettings = false
                                 }
                             }) {
                                 ZStack {
@@ -289,6 +262,8 @@ struct ContentView: View {
                                     }
                                 }
                             }
+                            
+                            Spacer()
                         }
                         .padding(.horizontal, 16)
                         
@@ -335,12 +310,13 @@ struct ContentView: View {
                     .zIndex(100)
                 }
                 
-                // LAYER 7: Settings Floating Window (highest priority, no background overlay)
+                // LAYER 7: Settings Floating Window (includes single-line Aspect Ratio)
                 if isShowingSettings {
                     VStack {
                         Spacer()
                         
-                        VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            // Header: title + close
                             HStack {
                                 Text("Settings:")
                                     .font(.headline)
@@ -349,7 +325,6 @@ struct ContentView: View {
                                 Spacer()
                                 
                                 Button(action: {
-                                    // Close instantly, no animation
                                     isShowingSettings = false
                                 }) {
                                     Image(systemName: "xmark.circle.fill")
@@ -358,7 +333,59 @@ struct ContentView: View {
                                 }
                             }
                             
-                            // Placeholder for future settings content
+                            // Aspect Ratio row (single line)
+                            HStack(spacing: 8) {
+                                Text("Aspect Ratio:")
+                                    .font(.subheadline)
+                                    .foregroundColor(.white)
+                                
+                                // 9:16 button
+                                Button(action: {
+                                    recorder.switchAspectRatio(.nineSixteen)
+                                }) {
+                                    Text("9:16")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 30)
+                                        .background(Color.black.opacity(0.5))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(
+                                                    recorder.selectedAspectRatio == .nineSixteen
+                                                    ? Color.blue
+                                                    : Color.gray,
+                                                    lineWidth: 2
+                                                )
+                                        )
+                                        .cornerRadius(6)
+                                }
+                                .disabled(recorder.isRecording) // safety: disabled while recording
+                                
+                                // 16:9 button
+                                Button(action: {
+                                    recorder.switchAspectRatio(.sixteenNine)
+                                }) {
+                                    Text("16:9")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 30)
+                                        .background(Color.black.opacity(0.5))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(
+                                                    recorder.selectedAspectRatio == .sixteenNine
+                                                    ? Color.blue
+                                                    : Color.gray,
+                                                    lineWidth: 2
+                                                )
+                                        )
+                                        .cornerRadius(6)
+                                }
+                                .disabled(recorder.isRecording) // safety: disabled while recording
+                                
+                                Spacer()
+                            }
+                            
                             Spacer(minLength: 0)
                         }
                         .padding(16)
@@ -404,6 +431,8 @@ struct ContentView: View {
         }
         .onChange(of: recorder.isRecording) { isRecording in
             if isRecording {
+                // Ensure settings panel is closed if recording starts from elsewhere
+                isShowingSettings = false
                 startTimer()
             } else {
                 stopTimer()
