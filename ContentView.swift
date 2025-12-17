@@ -379,7 +379,7 @@ struct ContentView: View {
                                 Spacer()
                             }
                             
-                            // NEW: Teleprompter text size row
+                            // Teleprompter text size row
                             HStack(spacing: 8) {
                                 Text("Teleprompter text size:")
                                     .font(.subheadline)
@@ -426,12 +426,63 @@ struct ContentView: View {
                                 Spacer()
                             }
                             
+                            // NEW: Background blur row
+                            HStack(spacing: 8) {
+                                Text("Background blur:")
+                                    .font(.subheadline)
+                                    .foregroundColor(.white)
+                                
+                                Button(action: {
+                                    recorder.setBackgroundBlur(false)
+                                }) {
+                                    Text("Off")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 30)
+                                        .background(Color.black.opacity(0.5))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(
+                                                    !recorder.isBackgroundBlurEnabled
+                                                    ? Color.blue
+                                                    : Color.gray,
+                                                    lineWidth: 2
+                                                )
+                                        )
+                                        .cornerRadius(6)
+                                }
+                                .disabled(recorder.isRecording)
+                                
+                                Button(action: {
+                                    recorder.setBackgroundBlur(true)
+                                }) {
+                                    Text("On")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 30)
+                                        .background(Color.black.opacity(0.5))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(
+                                                    recorder.isBackgroundBlurEnabled
+                                                    ? Color.blue
+                                                    : Color.gray,
+                                                    lineWidth: 2
+                                                )
+                                        )
+                                        .cornerRadius(6)
+                                }
+                                .disabled(recorder.isRecording)
+                                
+                                Spacer()
+                            }
+                            
                             Spacer(minLength: 0)
                         }
                         .padding(16)
                         .frame(
                             width: min(geo.size.width * 0.85, 360),
-                            height: min(geo.size.height * 0.45, 300)
+                            height: min(geo.size.height * 0.5, 320)
                         )
                         .background(Color.black.opacity(0.9))
                         .cornerRadius(16)
