@@ -312,6 +312,140 @@ class VideoRecorder: NSObject, ObservableObject {
             DispatchQueue.main.async { completion(self?.currentOutputURL) }
         }
     }
+    
+    // MARK: - Video Speed Processing
+    func speedUpVideo(inputURL: URL, speedIncreasePercent: Int, completion: @escaping (URL?) -> Void) {
+        // If speed increase is 0, just return the original
+        guard speedIncreasePercent > 0 else {
+            completion(inputURL)
+            return
+        }
+        
+        // Calculate the time scale factor
+        // If speedIncreasePercent is 10, we want 1.10x speed (play 10% faster)
+        let speedMultiplier = 1.0 + (Double(speedIncreasePercent) / 100.0)
+        
+        let asset = AVAsset(url: inputURL)
+        
+        // Create composition
+        let composition = AVMutableComposition()
+        
+        guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+            completion(nil)
+            return
+        }
+        
+        guard let compositionVideoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            completion(nil)
+            return
+        }
+        
+        // Add audio track if exists
+        var compositionAudioTrack: AVMutableCompositionTrack?
+        if let audioTrack = asset.tracks(withMediaType: .audio).first {
+            compositionAudioTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            )
+        }
+        
+        do {
+            let duration = asset.duration
+            let timeRange = CMTimeRange(start: .zero, duration: duration)
+            
+            // Insert video
+            try compositionVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+            
+            // Insert audio if exists
+            if let audioTrack = asset.tracks(withMediaType: .audio).first,
+               let compositionAudioTrack = compositionAudioTrack {
+                try compositionAudioTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+            }
+            
+            // Calculate new duration (shorter because it plays faster)
+            let newDuration = CMTimeMultiplyByFloat64(duration, multiplier: 1.0 / speedMultiplier)
+            
+            // Scale video time
+            compositionVideoTrack.scaleTimeRange(timeRange, toDuration: newDuration)
+            
+            // Scale audio time
+            if let compositionAudioTrack = compositionAudioTrack {
+                compositionAudioTrack.scaleTimeRange(timeRange, toDuration: newDuration)
+            }
+            
+            // Get video properties for proper orientation
+            let videoSize = videoTrack.naturalSize
+            let transform = videoTrack.preferredTransform
+            
+            // Calculate the actual render size considering transform
+            var renderSize = videoSize
+            let angle = atan2(transform.b, transform.a)
+            let isPortrait = abs(angle) == .pi / 2
+            
+            if isPortrait {
+                renderSize = CGSize(width: videoSize.height, height: videoSize.width)
+            }
+            
+            // Create video composition
+            let videoComposition = AVMutableVideoComposition()
+            videoComposition.renderSize = renderSize
+            videoComposition.frameDuration = CMTime(value: 1, timescale: 30) // 30 fps
+            
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRange(start: .zero, duration: newDuration)
+            
+            let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+            layerInstruction.setTransform(transform, at: .zero)
+            
+            instruction.layerInstructions = [layerInstruction]
+            videoComposition.instructions = [instruction]
+            
+            // Export
+            let outputURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("mov")
+            
+            guard let exportSession = AVAssetExportSession(
+                asset: composition,
+                presetName: AVAssetExportPresetHighestQuality
+            ) else {
+                print("Failed to create export session")
+                completion(nil)
+                return
+            }
+            
+            exportSession.outputURL = outputURL
+            exportSession.outputFileType = .mov
+            exportSession.videoComposition = videoComposition // THIS WAS MISSING!
+            
+            exportSession.exportAsynchronously {
+                DispatchQueue.main.async {
+                    switch exportSession.status {
+                    case .completed:
+                        print("Export completed successfully")
+                        completion(outputURL)
+                    case .failed:
+                        print("Export failed: \(String(describing: exportSession.error))")
+                        completion(nil)
+                    case .cancelled:
+                        print("Export cancelled")
+                        completion(nil)
+                    default:
+                        completion(nil)
+                    }
+                }
+            }
+            
+        } catch {
+            print("Error creating composition: \(error)")
+            completion(nil)
+        }
+    }
+
+
 }
 
 extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
