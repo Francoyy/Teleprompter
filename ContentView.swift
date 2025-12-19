@@ -65,10 +65,12 @@ struct ContentView: View {
     // Settings UI state
     @State private var isShowingSettings = false
 
-    // Teleprompter font size (now user-adjustable)
+    // Persisted + state teleprompter font size
+    @AppStorage("teleprompterFontSize") private var storedTeleprompterFontSize: Double = 40
     @State private var teleprompterFontSize: CGFloat = 40
     
-    // Speed increase percentage (default 4%)
+    // Persisted + state speed increase percentage
+    @AppStorage("speedIncreasePercent") private var storedSpeedIncreasePercent: Int = 4
     @State private var speedIncreasePercent: Int = 4
     
     @Environment(\.scenePhase) private var scenePhase
@@ -144,6 +146,10 @@ struct ContentView: View {
             teleText = defaultTeleText
             teleTextSource = "Default"
 
+            // Load persisted settings into state
+            teleprompterFontSize = CGFloat(storedTeleprompterFontSize)
+            speedIncreasePercent = storedSpeedIncreasePercent
+
             AVCaptureDevice.requestAccess(for: .video) { videoGranted in
                 AVCaptureDevice.requestAccess(for: .audio) { audioGranted in
                     if videoGranted && audioGranted {
@@ -162,14 +168,49 @@ struct ContentView: View {
         .onDisappear {
             autoScroll.stop()
             recordingTimerController.stop()
+            UIApplication.shared.isIdleTimerDisabled = false
         }
         .onChange(of: recorder.isRecording) { isRecording in
             if isRecording {
                 isShowingSettings = false
                 recordingTimerController.start()
+                // Prevent screen from sleeping while recording
+                UIApplication.shared.isIdleTimerDisabled = true
             } else {
                 recordingTimerController.stop()
+                // Restore normal idle behavior
+                UIApplication.shared.isIdleTimerDisabled = false
             }
+        }
+        .onChange(of: teleprompterFontSize) { newValue in
+            storedTeleprompterFontSize = Double(newValue)
+        }
+        .onChange(of: speedIncreasePercent) { newValue in
+            storedSpeedIncreasePercent = newValue
+        }
+        .onChange(of: scenePhase) { newPhase in
+            handleScenePhaseChange(newPhase)
+        }
+    }
+
+    // MARK: - Scene phase handling
+    
+    private func handleScenePhaseChange(_ newPhase: ScenePhase) {
+        switch newPhase {
+        case .active:
+            break
+
+        case .inactive, .background:
+            // If we are recording and the app is no longer active, stop/cancel
+            // to avoid "pretend recording" and save failures.
+            if recorder.isRecording {
+                recorder.cancelCurrentRecording()
+                recordingTimerController.stop()
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+
+        @unknown default:
+            break
         }
     }
 
@@ -216,6 +257,7 @@ struct ContentView: View {
     private func handleCancelRecording() {
         recorder.cancelCurrentRecording()
         recordingTimerController.stop()
+        UIApplication.shared.isIdleTimerDisabled = false
     }
 
     private func showCancelHint() {

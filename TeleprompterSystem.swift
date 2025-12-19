@@ -17,7 +17,15 @@ final class AutoScrollController: ObservableObject {
     let maxSpeed: CGFloat = 3.0   // shows as 20
     let step: CGFloat = 0.1       // +/-1 in UI
 
+    // MARK: - Persistence
+    private let autoScrollSpeedKey = "autoScrollSpeed"
+
     init() {
+        // Load persisted autoScrollSpeed if available
+        let stored = UserDefaults.standard.double(forKey: autoScrollSpeedKey)
+        if stored > 0 {
+            autoScrollSpeed = CGFloat(stored)
+        }
     }
 
     func toggle() {
@@ -56,10 +64,16 @@ final class AutoScrollController: ObservableObject {
 
     func increaseSpeed() {
         autoScrollSpeed = min(maxSpeed, (autoScrollSpeed + step).rounded(toPlaces: 2))
+        persistSpeed()
     }
 
     func decreaseSpeed() {
         autoScrollSpeed = max(minSpeed, (autoScrollSpeed - step).rounded(toPlaces: 2))
+        persistSpeed()
+    }
+
+    private func persistSpeed() {
+        UserDefaults.standard.set(Double(autoScrollSpeed), forKey: autoScrollSpeedKey)
     }
 
     // Display value 1–20 for the UI
@@ -162,9 +176,7 @@ struct CustomScrollView<Content: View>: UIViewRepresentable {
             // Let the view know its intrinsic size might have changed.
             hostingController.view.invalidateIntrinsicContentSize()
             hostingController.view.setNeedsLayout()
-            // IMPORTANT CHANGE:
-            // We no longer call layoutIfNeeded() here to avoid large,
-            // synchronous layout passes during user gestures.
+            // We intentionally do not call layoutIfNeeded() here.
         }
         
         // Only update scroll position if we're programmatically controlling it

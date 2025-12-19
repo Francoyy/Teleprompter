@@ -3,14 +3,16 @@ import AVFoundation
 import UIKit
 import Combine
 
-enum AspectRatio {
-    case nineSixteen // Vertical
-    case sixteenNine // Horizontal
+enum AspectRatio: Int {
+    case nineSixteen = 0 // Vertical
+    case sixteenNine = 1 // Horizontal
 }
 
 class VideoRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published private(set) var selectedAspectRatio: AspectRatio = .nineSixteen
+
+    private let aspectRatioKey = "selectedAspectRatio"
 
     let session = AVCaptureSession()
 
@@ -28,6 +30,16 @@ class VideoRecorder: NSObject, ObservableObject {
 
     private var currentOutputURL: URL?
     private var sessionStartTime: CMTime?
+    
+    override init() {
+        super.init()
+
+        // Load persisted aspect ratio if present
+        let storedValue = UserDefaults.standard.integer(forKey: aspectRatioKey)
+        if let storedRatio = AspectRatio(rawValue: storedValue) {
+            selectedAspectRatio = storedRatio
+        }
+    }
     
     // MARK: - Optional: Audio Session Configuration (iOS / visionOS)
     /// Configure AVAudioSession so the system's audio stack is in a sane
@@ -49,7 +61,7 @@ class VideoRecorder: NSObject, ObservableObject {
         }
         #endif
     }
-
+    
     // MARK: - Camera Selection
     func getBestFrontCamera() -> AVCaptureDevice? {
         // STRICT PRIORITY: Ultra Wide First
@@ -72,7 +84,7 @@ class VideoRecorder: NSObject, ObservableObject {
         
         return nil
     }
-
+    
     // MARK: - Session Setup
     func setupSession() {
         // ensure audio session is in a reasonable state before capture.
@@ -93,8 +105,8 @@ class VideoRecorder: NSObject, ObservableObject {
             session.addOutput(videoOutput)
         }
         
-        // 2. Configure Input & Format (This will also set the connection orientation)
-        configureCameraForAspectRatio(.nineSixteen)
+        // 2. Configure Input & Format using the persisted aspect ratio
+        configureCameraForAspectRatio(selectedAspectRatio)
 
         // 3. Audio
         if let audioDevice = AVCaptureDevice.default(for: .audio) {
@@ -120,6 +132,8 @@ class VideoRecorder: NSObject, ObservableObject {
         guard !isRecording else { return }
         if selectedAspectRatio != ratio {
             self.selectedAspectRatio = ratio
+            UserDefaults.standard.set(ratio.rawValue, forKey: aspectRatioKey)
+
             session.beginConfiguration()
             configureCameraForAspectRatio(ratio)
             session.commitConfiguration()
