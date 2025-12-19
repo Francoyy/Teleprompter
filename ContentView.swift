@@ -16,9 +16,40 @@ struct Yuan_Teleprompter2App: App {
     }
 }
 
+// MARK: - Timer Controller (class so we can use weak self safely)
+final class RecordingTimerController: ObservableObject {
+    @Published var duration: TimeInterval = 0
+    
+    private var timer: DispatchSourceTimer?
+    private let queue = DispatchQueue(label: "recordingTimerQueue")
+    
+    func start() {
+        stop()
+        duration = 0
+        
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.duration += 1
+            }
+        }
+        self.timer = timer
+        timer.resume()
+    }
+    
+    func stop() {
+        timer?.cancel()
+        timer = nil
+    }
+}
+
 struct ContentView: View {
     @StateObject private var recorder = VideoRecorder()
     @StateObject private var autoScroll = AutoScrollController()
+    @StateObject private var recordingTimerController = RecordingTimerController()
+    
     @State private var screenHeight: CGFloat = 0
 
     private let defaultTeleText = ""
@@ -29,7 +60,7 @@ struct ContentView: View {
     @State private var showClipboardToast = false
     @State private var showProcessingToast = false
     @State private var processingToastMessage = ""
-    @State private var showCancelHintToast = false   // NEW
+    @State private var showCancelHintToast = false
     
     // Settings UI state
     @State private var isShowingSettings = false
@@ -43,10 +74,6 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasAttemptedInitialClipboardLoad = false
     
-    // MARK: - Timer State
-    @State private var recordingDuration: TimeInterval = 0
-    @State private var recordingTimer: Timer?
-
     var body: some View {
         GeometryReader { geo in
             let _ = DispatchQueue.main.async { self.screenHeight = geo.size.height }
@@ -77,14 +104,14 @@ struct ContentView: View {
                     recorder: recorder,
                     isShowingSettings: $isShowingSettings,
                     onRecordToggle: handleRecordToggle,
-                    onCancelRecording: handleCancelRecording,  // NEW
-                    onCancelHint: showCancelHint,              // NEW
+                    onCancelRecording: handleCancelRecording,
+                    onCancelHint: showCancelHint,
                     onSave: saveToPhotos
                 )
                 
                 // LAYER 5: Recording Timer Overlay
                 if recorder.isRecording {
-                    RecordingTimerOverlay(duration: recordingDuration)
+                    RecordingTimerOverlay(duration: recordingTimerController.duration)
                 }
                 
                 // LAYER 6: Toast Notifications
@@ -134,13 +161,14 @@ struct ContentView: View {
         }
         .onDisappear {
             autoScroll.stop()
+            recordingTimerController.stop()
         }
         .onChange(of: recorder.isRecording) { isRecording in
             if isRecording {
                 isShowingSettings = false
-                startTimer()
+                recordingTimerController.start()
             } else {
-                stopTimer()
+                recordingTimerController.stop()
             }
         }
     }
@@ -185,13 +213,11 @@ struct ContentView: View {
         }
     }
     
-    // NEW: cancel handler used by the trash button
     private func handleCancelRecording() {
         recorder.cancelCurrentRecording()
-        // isRecording change will stop timer and hide trash
+        recordingTimerController.stop()
     }
 
-    // NEW: show hint when user releases before 2 seconds
     private func showCancelHint() {
         withAnimation {
             showCancelHintToast = true
@@ -280,28 +306,6 @@ struct ContentView: View {
                 try? FileManager.default.removeItem(at: url)
             })
         }
-    }
-    
-    // MARK: - Timer Helpers
-    
-    private func startTimer() {
-        stopTimer()
-        recordingDuration = 0
-        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            self.recordingDuration += 1
-        }
-    }
-
-    private func stopTimer() {
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-    }
-
-    private func formattedDuration(_ totalSeconds: TimeInterval) -> String {
-        let seconds = Int(totalSeconds) % 60
-        let minutes = Int(totalSeconds) / 60 % 60
-        let hours = Int(totalSeconds) / 3600
-        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
 
@@ -546,8 +550,8 @@ struct BottomControlBar: View {
     @ObservedObject var recorder: VideoRecorder
     @Binding var isShowingSettings: Bool
     let onRecordToggle: () -> Void
-    let onCancelRecording: () -> Void      // NEW
-    let onCancelHint: () -> Void           // NEW
+    let onCancelRecording: () -> Void
+    let onCancelHint: () -> Void
     let onSave: (URL) -> Void
 
     var body: some View {
