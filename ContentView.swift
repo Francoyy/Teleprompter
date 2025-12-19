@@ -70,10 +70,6 @@ struct ContentView: View {
     @AppStorage("teleprompterFontSize") private var storedTeleprompterFontSize: Double = 40
     @State private var teleprompterFontSize: CGFloat = 40
     
-    // Persisted + state speed increase percentage
-    @AppStorage("speedIncreasePercent") private var storedSpeedIncreasePercent: Int = 4
-    @State private var speedIncreasePercent: Int = 4
-    
     @Environment(\.scenePhase) private var scenePhase
     @State private var hasAttemptedInitialClipboardLoad = false
     
@@ -130,7 +126,6 @@ struct ContentView: View {
                         isShowingSettings: $isShowingSettings,
                         recorder: recorder,
                         teleprompterFontSize: $teleprompterFontSize,
-                        speedIncreasePercent: $speedIncreasePercent,
                         geoSize: geo.size
                     )
                 }
@@ -142,7 +137,6 @@ struct ContentView: View {
             teleTextSource = "Default"
 
             teleprompterFontSize = CGFloat(storedTeleprompterFontSize)
-            speedIncreasePercent = storedSpeedIncreasePercent
 
             AVCaptureDevice.requestAccess(for: .video) { videoGranted in
                 AVCaptureDevice.requestAccess(for: .audio) { audioGranted in
@@ -176,9 +170,6 @@ struct ContentView: View {
         }
         .onChange(of: teleprompterFontSize) { newValue in
             storedTeleprompterFontSize = Double(newValue)
-        }
-        .onChange(of: speedIncreasePercent) { newValue in
-            storedSpeedIncreasePercent = newValue
         }
         .onChange(of: scenePhase) { newPhase in
             handleScenePhaseChange(newPhase)
@@ -214,40 +205,8 @@ struct ContentView: View {
                     return
                 }
                 
-                // If speed increase is 0, skip processing
-                if speedIncreasePercent == 0 {
-                    saveToPhotos(url: url)
-                } else {
-                    // Prepare progress UI
-                    processingProgress = 0
-                    showToast("Processing video...", autoDismiss: false)
-                    
-                    recorder.speedUpVideo(
-                        inputURL: url,
-                        speedIncreasePercent: speedIncreasePercent,
-                        progressHandler: { progress in
-                            DispatchQueue.main.async {
-                                self.processingProgress = progress
-                                self.processingToastMessage = "Processing video..."
-                                self.showProcessingToast = true
-                            }
-                        },
-                        completion: { processedURL in
-                            guard let finalURL = processedURL else {
-                                self.processingProgress = nil
-                                self.showToast("Processing failed.", autoDismiss: true)
-                                return
-                            }
-                            
-                            self.processingProgress = 1.0
-                            self.saveToPhotos(url: finalURL)
-                            
-                            if finalURL != url {
-                                try? FileManager.default.removeItem(at: url)
-                            }
-                        }
-                    )
-                }
+                // Directly save recorded video with no speed processing
+                saveToPhotos(url: url)
             }
         } else {
             recorder.startRecording()
@@ -784,7 +743,6 @@ struct SettingsPanel: View {
     @Binding var isShowingSettings: Bool
     @ObservedObject var recorder: VideoRecorder
     @Binding var teleprompterFontSize: CGFloat
-    @Binding var speedIncreasePercent: Int
     let geoSize: CGSize
     
     var body: some View {
@@ -797,8 +755,6 @@ struct SettingsPanel: View {
                 AspectRatioRow(recorder: recorder)
                 
                 TeleprompterFontSizeRow(teleprompterFontSize: $teleprompterFontSize)
-                
-                SpeedIncreaseRow(speedIncreasePercent: $speedIncreasePercent)
                 
                 Spacer(minLength: 0)
             }
@@ -920,33 +876,6 @@ struct TeleprompterFontSizeRow: View {
             ) { newValue in
                 withAnimation(.easeInOut(duration: 0.1)) {
                     teleprompterFontSize = CGFloat(newValue)
-                }
-            }
-            
-            Spacer()
-        }
-    }
-}
-
-// MARK: - Speed Increase Row
-struct SpeedIncreaseRow: View {
-    @Binding var speedIncreasePercent: Int
-    
-    var body: some View {
-        HStack(spacing: 8) {
-            Text("Speed increase %:")
-                .font(.subheadline)
-                .foregroundColor(.white)
-            
-            PlusMinusControl(
-                value: speedIncreasePercent,
-                minValue: 0,
-                maxValue: 20,
-                step: 1,
-                displaySuffix: "%"
-            ) { newValue in
-                withAnimation(.easeInOut(duration: 0.1)) {
-                    speedIncreasePercent = newValue
                 }
             }
             

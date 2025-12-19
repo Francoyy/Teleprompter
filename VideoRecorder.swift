@@ -12,10 +12,6 @@ class VideoRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published private(set) var selectedAspectRatio: AspectRatio = .nineSixteen
 
-    // Export/progress state
-    @Published var isExporting: Bool = false
-    @Published var exportProgress: Float = 0.0
-
     private let aspectRatioKey = "selectedAspectRatio"
 
     let session = AVCaptureSession()
@@ -198,8 +194,14 @@ class VideoRecorder: NSObject, ObservableObject {
         
         // Re-apply Portrait Orientation to the Connection
         if let connection = videoOutput.connection(with: .video) {
-            if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
+            if #available(iOS 17.0, *) {
+                if connection.isVideoRotationAngleSupported(90) {
+                    connection.videoRotationAngle = 90
+                }
+            } else {
+                if connection.isVideoOrientationSupported {
+                    connection.videoOrientation = .portrait
+                }
             }
         }
     }
@@ -323,159 +325,6 @@ class VideoRecorder: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 completion?()
             }
-        }
-    }
-    
-    // MARK: - Video Speed Processing with Progress
-    func speedUpVideo(
-        inputURL: URL,
-        speedIncreasePercent: Int,
-        progressHandler: ((Float) -> Void)? = nil,
-        completion: @escaping (URL?) -> Void
-    ) {
-        // If speed increase is 0, just return the original
-        guard speedIncreasePercent > 0 else {
-            completion(inputURL)
-            return
-        }
-        
-        let speedMultiplier = 1.0 + (Double(speedIncreasePercent) / 100.0)
-        let asset = AVAsset(url: inputURL)
-        
-        let composition = AVMutableComposition()
-        
-        guard let videoTrack = asset.tracks(withMediaType: .video).first else {
-            completion(nil)
-            return
-        }
-        
-        guard let compositionVideoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            completion(nil)
-            return
-        }
-        
-        var compositionAudioTrack: AVMutableCompositionTrack?
-        if let audioTrack = asset.tracks(withMediaType: .audio).first {
-            compositionAudioTrack = composition.addMutableTrack(
-                withMediaType: .audio,
-                preferredTrackID: kCMPersistentTrackID_Invalid
-            )
-        }
-        
-        do {
-            let duration = asset.duration
-            let timeRange = CMTimeRange(start: .zero, duration: duration)
-            
-            try compositionVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
-            
-            if let audioTrack = asset.tracks(withMediaType: .audio).first,
-               let compositionAudioTrack = compositionAudioTrack {
-                try compositionAudioTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
-            }
-            
-            let newDuration = CMTimeMultiplyByFloat64(duration, multiplier: 1.0 / speedMultiplier)
-            
-            compositionVideoTrack.scaleTimeRange(timeRange, toDuration: newDuration)
-            if let compositionAudioTrack = compositionAudioTrack {
-                compositionAudioTrack.scaleTimeRange(timeRange, toDuration: newDuration)
-            }
-            
-            let videoSize = videoTrack.naturalSize
-            let transform = videoTrack.preferredTransform
-            
-            var renderSize = videoSize
-            let angle = atan2(transform.b, transform.a)
-            let isPortrait = abs(angle) == .pi / 2
-            
-            if isPortrait {
-                renderSize = CGSize(width: videoSize.height, height: videoSize.width)
-            }
-            
-            let videoComposition = AVMutableVideoComposition()
-            videoComposition.renderSize = renderSize
-            videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-            
-            let instruction = AVMutableVideoCompositionInstruction()
-            instruction.timeRange = CMTimeRange(start: .zero, duration: newDuration)
-            
-            let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
-            layerInstruction.setTransform(transform, at: .zero)
-            
-            instruction.layerInstructions = [layerInstruction]
-            videoComposition.instructions = [instruction]
-            
-            let outputURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension("mov")
-            
-            guard let exportSession = AVAssetExportSession(
-                asset: composition,
-                presetName: AVAssetExportPresetHighestQuality
-            ) else {
-                print("Failed to create export session")
-                completion(nil)
-                return
-            }
-            
-            exportSession.outputURL = outputURL
-            exportSession.outputFileType = .mov
-            exportSession.videoComposition = videoComposition
-
-            // Reset/export state
-            DispatchQueue.main.async {
-                self.isExporting = true
-                self.exportProgress = 0.0
-            }
-
-            // Progress polling timer (0.2s)
-            let progressTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
-            progressTimer.schedule(deadline: .now(), repeating: 0.2)
-            progressTimer.setEventHandler { [weak self, weak exportSession] in
-                guard let self = self,
-                      let session = exportSession else {
-                    progressTimer.cancel()
-                    return
-                }
-                let p = session.progress
-                DispatchQueue.main.async {
-                    self.exportProgress = p
-                    progressHandler?(p)
-                }
-                // if finished, we'll cancel in export completion
-            }
-            progressTimer.resume()
-            
-            exportSession.exportAsynchronously {
-                // Stop the progress timer
-                progressTimer.cancel()
-                
-                DispatchQueue.main.async {
-                    self.isExporting = false
-                }
-
-                DispatchQueue.main.async {
-                    switch exportSession.status {
-                    case .completed:
-                        print("Export completed successfully")
-                        completion(outputURL)
-                    case .failed:
-                        print("Export failed: \(String(describing: exportSession.error))")
-                        completion(nil)
-                    case .cancelled:
-                        print("Export cancelled")
-                        completion(nil)
-                    default:
-                        completion(nil)
-                    }
-                }
-            }
-            
-        } catch {
-            print("Error creating composition: \(error)")
-            completion(nil)
         }
     }
 }
