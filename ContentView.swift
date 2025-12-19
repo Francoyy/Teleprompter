@@ -58,10 +58,9 @@ struct ContentView: View {
     @State private var teleTextSource: String = "Default"
     
     @State private var showClipboardToast = false
-    @State private var showProcessingToast = false
-    @State private var processingToastMessage = ""
-    @State private var processingProgress: Float? = nil
     @State private var showCancelHintToast = false
+    @State private var toastMessage = ""
+    @State private var showGenericToast = false
     
     // Settings UI state
     @State private var isShowingSettings = false
@@ -112,9 +111,8 @@ struct ContentView: View {
                     ClipboardToast()
                 }
                 
-                if showProcessingToast {
-                    ProcessingToast(message: processingToastMessage,
-                                    progress: processingProgress)
+                if showGenericToast {
+                    GenericToast(message: toastMessage)
                 }
                 
                 if showCancelHintToast {
@@ -205,7 +203,7 @@ struct ContentView: View {
                     return
                 }
                 
-                // Directly save recorded video with no speed processing
+                // Save directly to photos without processing
                 saveToPhotos(url: url)
             }
         } else {
@@ -233,17 +231,16 @@ struct ContentView: View {
     
     private func showToast(_ message: String, autoDismiss: Bool) {
         DispatchQueue.main.async {
-            self.processingToastMessage = message
+            self.toastMessage = message
             withAnimation {
-                self.showProcessingToast = true
+                self.showGenericToast = true
             }
             
             if autoDismiss {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     withAnimation {
-                        self.showProcessingToast = false
+                        self.showGenericToast = false
                     }
-                    self.processingProgress = nil
                 }
             }
         }
@@ -252,9 +249,8 @@ struct ContentView: View {
     private func hideToast() {
         DispatchQueue.main.async {
             withAnimation {
-                self.showProcessingToast = false
+                self.showGenericToast = false
             }
-            self.processingProgress = nil
         }
     }
 
@@ -692,27 +688,21 @@ struct ClipboardToast: View {
     }
 }
 
-// MARK: - Processing Toast (with optional progress)
-struct ProcessingToast: View {
+// MARK: - Generic Toast (replaces ProcessingToast)
+struct GenericToast: View {
     let message: String
-    let progress: Float?   // 0...1
 
     var body: some View {
         VStack {
             Spacer()
-            HStack(spacing: 8) {
-                Text(message)
-                if let p = progress {
-                    Text(String(format: "%.0f%%", p * 100))
-                }
-            }
-            .font(.system(.body, design: .monospaced))   // monospaced
-            .foregroundColor(.white)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(Color.black.opacity(0.8))
-            .cornerRadius(10)
-            .padding(.bottom, 150)
+            Text(message)
+                .font(.system(.body, design: .monospaced))   // monospaced
+                .foregroundColor(.white)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.black.opacity(0.8))
+                .cornerRadius(10)
+                .padding(.bottom, 150)
         }
         .transition(.opacity)
         .zIndex(100)
