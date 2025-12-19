@@ -16,7 +16,7 @@ struct Yuan_Teleprompter2App: App {
     }
 }
 
-// MARK: - Timer Controller (class so we can use weak self safely)
+// MARK: - Timer Controller
 final class RecordingTimerController: ObservableObject {
     @Published var duration: TimeInterval = 0
     
@@ -60,6 +60,7 @@ struct ContentView: View {
     @State private var showClipboardToast = false
     @State private var showProcessingToast = false
     @State private var processingToastMessage = ""
+    @State private var processingProgress: Float? = nil
     @State private var showCancelHintToast = false
     
     // Settings UI state
@@ -81,10 +82,8 @@ struct ContentView: View {
             let _ = DispatchQueue.main.async { self.screenHeight = geo.size.height }
             
             ZStack {
-                // LAYER 1: Camera preview
                 CameraPreviewLayer(recorder: recorder)
                 
-                // LAYER 2: Teleprompter
                 TeleprompterLayer(
                     teleText: teleText,
                     teleprompterFontSize: teleprompterFontSize,
@@ -92,7 +91,6 @@ struct ContentView: View {
                     geoWidth: geo.size.width
                 )
                 
-                // LAYER 3: Top control bar
                 TopControlBar(
                     teleText: teleText,
                     autoScroll: autoScroll,
@@ -101,7 +99,6 @@ struct ContentView: View {
                     onClipboardPaste: { loadTeleprompterTextFromClipboard(explicitUserAction: true) }
                 )
                 
-                // LAYER 4: Bottom control bar
                 BottomControlBar(
                     recorder: recorder,
                     isShowingSettings: $isShowingSettings,
@@ -111,25 +108,23 @@ struct ContentView: View {
                     onSave: saveToPhotos
                 )
                 
-                // LAYER 5: Recording Timer Overlay
                 if recorder.isRecording {
                     RecordingTimerOverlay(duration: recordingTimerController.duration)
                 }
                 
-                // LAYER 6: Toast Notifications
                 if showClipboardToast {
                     ClipboardToast()
                 }
                 
                 if showProcessingToast {
-                    ProcessingToast(message: processingToastMessage)
+                    ProcessingToast(message: processingToastMessage,
+                                    progress: processingProgress)
                 }
                 
                 if showCancelHintToast {
                     CancelHintToast()
                 }
                 
-                // LAYER 7: Settings Floating Window
                 if isShowingSettings {
                     SettingsPanel(
                         isShowingSettings: $isShowingSettings,
@@ -146,7 +141,6 @@ struct ContentView: View {
             teleText = defaultTeleText
             teleTextSource = "Default"
 
-            // Load persisted settings into state
             teleprompterFontSize = CGFloat(storedTeleprompterFontSize)
             speedIncreasePercent = storedSpeedIncreasePercent
 
@@ -174,11 +168,9 @@ struct ContentView: View {
             if isRecording {
                 isShowingSettings = false
                 recordingTimerController.start()
-                // Prevent screen from sleeping while recording
                 UIApplication.shared.isIdleTimerDisabled = true
             } else {
                 recordingTimerController.stop()
-                // Restore normal idle behavior
                 UIApplication.shared.isIdleTimerDisabled = false
             }
         }
@@ -201,8 +193,6 @@ struct ContentView: View {
             break
 
         case .inactive, .background:
-            // If we are recording and the app is no longer active, stop/cancel
-            // to avoid "pretend recording" and save failures.
             if recorder.isRecording {
                 recorder.cancelCurrentRecording()
                 recordingTimerController.stop()
@@ -224,28 +214,39 @@ struct ContentView: View {
                     return
                 }
                 
-                // If speed increase is 0%, skip processing and save directly
+                // If speed increase is 0, skip processing
                 if speedIncreasePercent == 0 {
                     saveToPhotos(url: url)
                 } else {
-                    // Show processing message (stays on screen)
+                    // Prepare progress UI
+                    processingProgress = 0
                     showToast("Processing video...", autoDismiss: false)
                     
-                    // Speed up the video using the recorder's method
-                    recorder.speedUpVideo(inputURL: url, speedIncreasePercent: speedIncreasePercent) { processedURL in
-                        guard let finalURL = processedURL else {
-                            showToast("Processing failed.", autoDismiss: true)
-                            return
+                    recorder.speedUpVideo(
+                        inputURL: url,
+                        speedIncreasePercent: speedIncreasePercent,
+                        progressHandler: { progress in
+                            DispatchQueue.main.async {
+                                self.processingProgress = progress
+                                self.processingToastMessage = "Processing video..."
+                                self.showProcessingToast = true
+                            }
+                        },
+                        completion: { processedURL in
+                            guard let finalURL = processedURL else {
+                                self.processingProgress = nil
+                                self.showToast("Processing failed.", autoDismiss: true)
+                                return
+                            }
+                            
+                            self.processingProgress = 1.0
+                            self.saveToPhotos(url: finalURL)
+                            
+                            if finalURL != url {
+                                try? FileManager.default.removeItem(at: url)
+                            }
                         }
-                        
-                        // Save to photos
-                        saveToPhotos(url: finalURL)
-                        
-                        // Clean up temporary file if different from original
-                        if finalURL != url {
-                            try? FileManager.default.removeItem(at: url)
-                        }
-                    }
+                    )
                 }
             }
         } else {
@@ -283,6 +284,7 @@ struct ContentView: View {
                     withAnimation {
                         self.showProcessingToast = false
                     }
+                    self.processingProgress = nil
                 }
             }
         }
@@ -293,6 +295,7 @@ struct ContentView: View {
             withAnimation {
                 self.showProcessingToast = false
             }
+            self.processingProgress = nil
         }
     }
 
@@ -334,17 +337,14 @@ struct ContentView: View {
             PHPhotoLibrary.shared().performChanges({
                 PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
             }, completionHandler: { success, error in
-                // Hide the processing toast first
                 hideToast()
                 
-                // Then show the result
                 if success {
                     showToast("Saved successfully!", autoDismiss: true)
                 } else {
                     showToast("Failed to save.", autoDismiss: true)
                 }
                 
-                // Clean up the temporary file
                 try? FileManager.default.removeItem(at: url)
             })
         }
@@ -360,7 +360,6 @@ struct CameraPreviewLayer: View {
             let verticalOffset: CGFloat = 88
             
             ZStack {
-                // Base camera preview
                 CameraPreview(session: recorder.session)
                     .frame(
                         width: previewGeo.size.width,
@@ -371,7 +370,6 @@ struct CameraPreviewLayer: View {
                     .offset(y: recorder.selectedAspectRatio == .nineSixteen ? verticalOffset : 0)
                     .clipped()
                 
-                // 16:9 mask
                 if recorder.selectedAspectRatio == .sixteenNine {
                     SixteenNineMask(geoSize: previewGeo.size)
                 }
@@ -601,13 +599,11 @@ struct BottomControlBar: View {
             Spacer()
             
             ZStack {
-                // Centered record button
                 RecordButton(
                     isRecording: recorder.isRecording,
                     onToggle: onRecordToggle
                 )
                 
-                // Right-aligned trash button (only while recording)
                 if recorder.isRecording {
                     HStack {
                         Spacer()
@@ -652,7 +648,7 @@ struct RecordButton: View {
     }
 }
 
-// MARK: - Cancel Recording Button (Trash)
+// MARK: - Cancel Recording Button
 struct CancelRecordingButton: View {
     let onCancel: () -> Void
     let onShortPress: () -> Void
@@ -672,11 +668,9 @@ struct CancelRecordingButton: View {
             }
         }
         .buttonStyle(PlainButtonStyle())
-        // Long press recognizer (2 seconds)
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 2.0)
                 .onChanged { _ in
-                    // reset when finger goes down
                     didFireLongPress = false
                 }
                 .onEnded { finished in
@@ -686,7 +680,6 @@ struct CancelRecordingButton: View {
                     }
                 }
         )
-        // Short tap / short press recognizer
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onEnded { _ in
@@ -727,7 +720,7 @@ struct ClipboardToast: View {
         VStack {
             Spacer()
             Text("Clipboard is empty")
-                .font(.body)
+                .font(.system(.body, design: .monospaced))   // monospaced
                 .foregroundColor(.white)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
@@ -740,21 +733,27 @@ struct ClipboardToast: View {
     }
 }
 
-// MARK: - Processing Toast
+// MARK: - Processing Toast (with optional progress)
 struct ProcessingToast: View {
     let message: String
-    
+    let progress: Float?   // 0...1
+
     var body: some View {
         VStack {
             Spacer()
-            Text(message)
-                .font(.body)
-                .foregroundColor(.white)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-                .background(Color.black.opacity(0.8))
-                .cornerRadius(10)
-                .padding(.bottom, 150)
+            HStack(spacing: 8) {
+                Text(message)
+                if let p = progress {
+                    Text(String(format: "%.0f%%", p * 100))
+                }
+            }
+            .font(.system(.body, design: .monospaced))   // monospaced
+            .foregroundColor(.white)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(Color.black.opacity(0.8))
+            .cornerRadius(10)
+            .padding(.bottom, 150)
         }
         .transition(.opacity)
         .zIndex(100)
@@ -767,7 +766,7 @@ struct CancelHintToast: View {
         VStack {
             Spacer()
             Text("Press 2 seconds to cancel recording")
-                .font(.body)
+                .font(.system(.body, design: .monospaced))   // monospaced
                 .foregroundColor(.white)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)

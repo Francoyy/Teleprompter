@@ -12,6 +12,10 @@ class VideoRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published private(set) var selectedAspectRatio: AspectRatio = .nineSixteen
 
+    // Export/progress state
+    @Published var isExporting: Bool = false
+    @Published var exportProgress: Float = 0.0
+
     private let aspectRatioKey = "selectedAspectRatio"
 
     let session = AVCaptureSession()
@@ -42,21 +46,15 @@ class VideoRecorder: NSObject, ObservableObject {
     }
     
     // MARK: - Optional: Audio Session Configuration (iOS / visionOS)
-    /// Configure AVAudioSession so the system's audio stack is in a sane
-    /// state before using AVCapture audio. This can reduce internal
-    /// FigAudioSession warnings.
     private func configureAudioSessionIfNeeded() {
         #if os(iOS) || os(tvOS) || os(visionOS)
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            // playAndRecord allows microphone + playback, mode tuned for video.
             try audioSession.setCategory(.playAndRecord,
                                          mode: .videoRecording,
                                          options: [.defaultToSpeaker, .allowBluetooth])
             try audioSession.setActive(true)
         } catch {
-            // We don't surface this to the user; failure just means we might
-            // see some extra internal warnings.
             print("AVAudioSession configuration failed: \(error)")
         }
         #endif
@@ -64,7 +62,6 @@ class VideoRecorder: NSObject, ObservableObject {
     
     // MARK: - Camera Selection
     func getBestFrontCamera() -> AVCaptureDevice? {
-        // STRICT PRIORITY: Ultra Wide First
         if let ultraWide = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInUltraWideCamera],
             mediaType: .video,
@@ -73,7 +70,6 @@ class VideoRecorder: NSObject, ObservableObject {
             return ultraWide
         }
         
-        // Fallback only if Ultra Wide is missing
         if let wide = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera],
             mediaType: .video,
@@ -87,13 +83,12 @@ class VideoRecorder: NSObject, ObservableObject {
     
     // MARK: - Session Setup
     func setupSession() {
-        // ensure audio session is in a reasonable state before capture.
         configureAudioSessionIfNeeded()
 
         session.beginConfiguration()
         session.sessionPreset = .inputPriority // Allow manual format
 
-        // 1. Video Output Setup (Add this first so connection exists when adding input)
+        // 1. Video Output Setup
         let videoQueue = DispatchQueue(label: "videoQueue")
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -143,14 +138,14 @@ class VideoRecorder: NSObject, ObservableObject {
     private func configureCameraForAspectRatio(_ ratio: AspectRatio) {
         guard let videoDevice = getBestFrontCamera() else { return }
         
-        // 1. Remove existing video inputs to ensure clean slate
+        // Remove existing video inputs
         session.inputs.forEach { input in
             if let devInput = input as? AVCaptureDeviceInput, devInput.device.hasMediaType(.video) {
                 session.removeInput(input)
             }
         }
         
-        // 2. Add Input
+        // Add Input
         do {
             let input = try AVCaptureDeviceInput(device: videoDevice)
             if session.canAddInput(input) {
@@ -160,10 +155,7 @@ class VideoRecorder: NSObject, ObservableObject {
             return
         }
         
-        // 3. Find Best Format
-        // 9:16 -> Hunt for 16:9 native (3840x2160)
-        // 16:9 -> Hunt for 4:3 native (4032x3024)
-        
+        // Find Best Format
         let targetFps: Double = 30.0
         let targetRatio: Double = (ratio == .nineSixteen) ? (16.0/9.0) : (4.0/3.0)
         
@@ -204,7 +196,7 @@ class VideoRecorder: NSObject, ObservableObject {
             }
         }
         
-        // 4. Re-apply Portrait Orientation to the Connection
+        // Re-apply Portrait Orientation to the Connection
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoOrientationSupported {
                 connection.videoOrientation = .portrait
@@ -229,13 +221,9 @@ class VideoRecorder: NSObject, ObservableObject {
 
             var videoSettings: [String: Any] = [:]
             
-            // NOTE: The buffer coming from captureOutput is now guaranteed to be PORTRAIT.
-            // If Format is 4032x3024 (Landscape), Buffer is 3024x4032 (Portrait).
-            
             if selectedAspectRatio == .nineSixteen {
-                // 9:16 MODE (Vertical 4K)
-                let w = nativeFormatHeight // 2160
-                let h = nativeFormatWidth  // 3840
+                let w = nativeFormatHeight
+                let h = nativeFormatWidth
                 
                 videoSettings = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
@@ -245,9 +233,8 @@ class VideoRecorder: NSObject, ObservableObject {
                 ]
                 
             } else {
-                // 16:9 MODE (Horizontal Crop)
-                let outputWidth = nativeFormatHeight // 3024
-                let outputHeight = Int(Double(outputWidth) * 9.0 / 16.0) // 1701
+                let outputWidth = nativeFormatHeight
+                let outputHeight = Int(Double(outputWidth) * 9.0 / 16.0)
                 
                 videoSettings = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
@@ -260,13 +247,12 @@ class VideoRecorder: NSObject, ObservableObject {
             
             videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoInput?.expectsMediaDataInRealTime = true
-            videoInput?.transform = CGAffineTransform.identity // No rotation
+            videoInput?.transform = CGAffineTransform.identity
 
             if let writer = writer, let videoInput = videoInput, writer.canAdd(videoInput) {
                 writer.add(videoInput)
             }
             
-            // Audio
             let audioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVNumberOfChannelsKey: 2,
@@ -311,10 +297,6 @@ class VideoRecorder: NSObject, ObservableObject {
     }
 
     // MARK: - Cancel Recording (trash icon)
-    /// Cancel the current recording:
-    /// - stops writing
-    /// - deletes the temporary file
-    /// - does NOT save or process anything
     func cancelCurrentRecording(completion: (() -> Void)? = nil) {
         guard let writer = writer, isRecording else {
             completion?()
@@ -344,21 +326,22 @@ class VideoRecorder: NSObject, ObservableObject {
         }
     }
     
-    // MARK: - Video Speed Processing
-    func speedUpVideo(inputURL: URL, speedIncreasePercent: Int, completion: @escaping (URL?) -> Void) {
+    // MARK: - Video Speed Processing with Progress
+    func speedUpVideo(
+        inputURL: URL,
+        speedIncreasePercent: Int,
+        progressHandler: ((Float) -> Void)? = nil,
+        completion: @escaping (URL?) -> Void
+    ) {
         // If speed increase is 0, just return the original
         guard speedIncreasePercent > 0 else {
             completion(inputURL)
             return
         }
         
-        // Calculate the time scale factor
-        // If speedIncreasePercent is 10, we want 1.10x speed (play 10% faster)
         let speedMultiplier = 1.0 + (Double(speedIncreasePercent) / 100.0)
-        
         let asset = AVAsset(url: inputURL)
         
-        // Create composition
         let composition = AVMutableComposition()
         
         guard let videoTrack = asset.tracks(withMediaType: .video).first else {
@@ -374,7 +357,6 @@ class VideoRecorder: NSObject, ObservableObject {
             return
         }
         
-        // Add audio track if exists
         var compositionAudioTrack: AVMutableCompositionTrack?
         if let audioTrack = asset.tracks(withMediaType: .audio).first {
             compositionAudioTrack = composition.addMutableTrack(
@@ -387,31 +369,23 @@ class VideoRecorder: NSObject, ObservableObject {
             let duration = asset.duration
             let timeRange = CMTimeRange(start: .zero, duration: duration)
             
-            // Insert video
             try compositionVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
             
-            // Insert audio if exists
             if let audioTrack = asset.tracks(withMediaType: .audio).first,
                let compositionAudioTrack = compositionAudioTrack {
                 try compositionAudioTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
             }
             
-            // Calculate new duration (shorter because it plays faster)
             let newDuration = CMTimeMultiplyByFloat64(duration, multiplier: 1.0 / speedMultiplier)
             
-            // Scale video time
             compositionVideoTrack.scaleTimeRange(timeRange, toDuration: newDuration)
-            
-            // Scale audio time
             if let compositionAudioTrack = compositionAudioTrack {
                 compositionAudioTrack.scaleTimeRange(timeRange, toDuration: newDuration)
             }
             
-            // Get video properties for proper orientation
             let videoSize = videoTrack.naturalSize
             let transform = videoTrack.preferredTransform
             
-            // Calculate the actual render size considering transform
             var renderSize = videoSize
             let angle = atan2(transform.b, transform.a)
             let isPortrait = abs(angle) == .pi / 2
@@ -420,10 +394,9 @@ class VideoRecorder: NSObject, ObservableObject {
                 renderSize = CGSize(width: videoSize.height, height: videoSize.width)
             }
             
-            // Create video composition
             let videoComposition = AVMutableVideoComposition()
             videoComposition.renderSize = renderSize
-            videoComposition.frameDuration = CMTime(value: 1, timescale: 30) // 30 fps
+            videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
             
             let instruction = AVMutableVideoCompositionInstruction()
             instruction.timeRange = CMTimeRange(start: .zero, duration: newDuration)
@@ -434,7 +407,6 @@ class VideoRecorder: NSObject, ObservableObject {
             instruction.layerInstructions = [layerInstruction]
             videoComposition.instructions = [instruction]
             
-            // Export
             let outputURL = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("mov")
@@ -451,8 +423,39 @@ class VideoRecorder: NSObject, ObservableObject {
             exportSession.outputURL = outputURL
             exportSession.outputFileType = .mov
             exportSession.videoComposition = videoComposition
+
+            // Reset/export state
+            DispatchQueue.main.async {
+                self.isExporting = true
+                self.exportProgress = 0.0
+            }
+
+            // Progress polling timer (0.2s)
+            let progressTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+            progressTimer.schedule(deadline: .now(), repeating: 0.2)
+            progressTimer.setEventHandler { [weak self, weak exportSession] in
+                guard let self = self,
+                      let session = exportSession else {
+                    progressTimer.cancel()
+                    return
+                }
+                let p = session.progress
+                DispatchQueue.main.async {
+                    self.exportProgress = p
+                    progressHandler?(p)
+                }
+                // if finished, we'll cancel in export completion
+            }
+            progressTimer.resume()
             
             exportSession.exportAsynchronously {
+                // Stop the progress timer
+                progressTimer.cancel()
+                
+                DispatchQueue.main.async {
+                    self.isExporting = false
+                }
+
                 DispatchQueue.main.async {
                     switch exportSession.status {
                     case .completed:
