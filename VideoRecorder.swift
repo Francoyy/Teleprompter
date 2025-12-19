@@ -75,7 +75,7 @@ class VideoRecorder: NSObject, ObservableObject {
 
     // MARK: - Session Setup
     func setupSession() {
-        // NEW: ensure audio session is in a reasonable state before capture.
+        // ensure audio session is in a reasonable state before capture.
         configureAudioSessionIfNeeded()
 
         session.beginConfiguration()
@@ -190,9 +190,7 @@ class VideoRecorder: NSObject, ObservableObject {
             }
         }
         
-        // 4. CRITICAL: Re-apply Portrait Orientation to the Connection
-        // When inputs change, the connection resets to default (Landscape).
-        // We MUST force it back to Portrait so buffers come in upright (e.g. 3024x4032).
+        // 4. Re-apply Portrait Orientation to the Connection
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoOrientationSupported {
                 connection.videoOrientation = .portrait
@@ -221,13 +219,7 @@ class VideoRecorder: NSObject, ObservableObject {
             // If Format is 4032x3024 (Landscape), Buffer is 3024x4032 (Portrait).
             
             if selectedAspectRatio == .nineSixteen {
-                // ===================================
                 // 9:16 MODE (Vertical 4K)
-                // ===================================
-                // Native: 3840x2160
-                // Buffer: 2160x3840
-                // Target: 2160x3840
-                
                 let w = nativeFormatHeight // 2160
                 let h = nativeFormatWidth  // 3840
                 
@@ -239,19 +231,7 @@ class VideoRecorder: NSObject, ObservableObject {
                 ]
                 
             } else {
-                // ===================================
                 // 16:9 MODE (Horizontal Crop)
-                // ===================================
-                // Native: 4032x3024 (4:3)
-                // Buffer: 3024x4032 (Upright Portrait)
-                //
-                // We want a 16:9 Horizontal video.
-                // We use the full available Width of the buffer (3024).
-                // We calculate Height = Width * 9/16 = 1701.
-                //
-                // ResizeAspectFill will take the 3024x4032 image, match the 3024 width,
-                // and center-crop the vertical height to 1701.
-                
                 let outputWidth = nativeFormatHeight // 3024
                 let outputHeight = Int(Double(outputWidth) * 9.0 / 16.0) // 1701
                 
@@ -262,7 +242,6 @@ class VideoRecorder: NSObject, ObservableObject {
                     AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
                     AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
                 ]
-                
             }
             
             videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
@@ -305,11 +284,49 @@ class VideoRecorder: NSObject, ObservableObject {
         sessionStartTime = nil
 
         writer.finishWriting { [weak self] in
-            self?.writer = nil
-            self?.videoInput = nil
-            self?.audioInput = nil
+            guard let self = self else { return }
+            let url = self.currentOutputURL
+            self.writer = nil
+            self.videoInput = nil
+            self.audioInput = nil
             
-            DispatchQueue.main.async { completion(self?.currentOutputURL) }
+            DispatchQueue.main.async {
+                completion(url)
+            }
+        }
+    }
+
+    // MARK: - Cancel Recording (trash icon)
+    /// Cancel the current recording:
+    /// - stops writing
+    /// - deletes the temporary file
+    /// - does NOT save or process anything
+    func cancelCurrentRecording(completion: (() -> Void)? = nil) {
+        guard let writer = writer, isRecording else {
+            completion?()
+            return
+        }
+
+        isRecording = false
+        sessionStartTime = nil
+
+        let urlToDelete = currentOutputURL
+
+        writer.finishWriting { [weak self] in
+            guard let self = self else { return }
+
+            self.writer = nil
+            self.videoInput = nil
+            self.audioInput = nil
+
+            if let url = urlToDelete {
+                try? FileManager.default.removeItem(at: url)
+            }
+            self.currentOutputURL = nil
+
+            DispatchQueue.main.async {
+                completion?()
+            }
         }
     }
     
@@ -419,7 +436,7 @@ class VideoRecorder: NSObject, ObservableObject {
             
             exportSession.outputURL = outputURL
             exportSession.outputFileType = .mov
-            exportSession.videoComposition = videoComposition // THIS WAS MISSING!
+            exportSession.videoComposition = videoComposition
             
             exportSession.exportAsynchronously {
                 DispatchQueue.main.async {
@@ -444,8 +461,6 @@ class VideoRecorder: NSObject, ObservableObject {
             completion(nil)
         }
     }
-
-
 }
 
 extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {

@@ -29,14 +29,15 @@ struct ContentView: View {
     @State private var showClipboardToast = false
     @State private var showProcessingToast = false
     @State private var processingToastMessage = ""
+    @State private var showCancelHintToast = false   // NEW
     
     // Settings UI state
     @State private var isShowingSettings = false
 
-    // Teleprompter font size (now user‑adjustable)
+    // Teleprompter font size (now user-adjustable)
     @State private var teleprompterFontSize: CGFloat = 40
     
-    // NEW: Speed increase percentage (default 4%)
+    // Speed increase percentage (default 4%)
     @State private var speedIncreasePercent: Int = 4
     
     @Environment(\.scenePhase) private var scenePhase
@@ -76,6 +77,8 @@ struct ContentView: View {
                     recorder: recorder,
                     isShowingSettings: $isShowingSettings,
                     onRecordToggle: handleRecordToggle,
+                    onCancelRecording: handleCancelRecording,  // NEW
+                    onCancelHint: showCancelHint,              // NEW
                     onSave: saveToPhotos
                 )
                 
@@ -91,6 +94,10 @@ struct ContentView: View {
                 
                 if showProcessingToast {
                     ProcessingToast(message: processingToastMessage)
+                }
+                
+                if showCancelHintToast {
+                    CancelHintToast()
                 }
                 
                 // LAYER 7: Settings Floating Window
@@ -148,28 +155,51 @@ struct ContentView: View {
                     return
                 }
                 
-                // Show processing message (stays on screen)
-                showToast("Processing video...", autoDismiss: false)
-                
-                // Speed up the video using the recorder's method
-                recorder.speedUpVideo(inputURL: url, speedIncreasePercent: speedIncreasePercent) { processedURL in
-                    guard let finalURL = processedURL else {
-                        showToast("Processing failed.", autoDismiss: true)
-                        return
-                    }
+                // If speed increase is 0%, skip processing and save directly
+                if speedIncreasePercent == 0 {
+                    saveToPhotos(url: url)
+                } else {
+                    // Show processing message (stays on screen)
+                    showToast("Processing video...", autoDismiss: false)
                     
-                    // Save to photos
-                    saveToPhotos(url: finalURL)
-                    
-                    // Clean up temporary file if different from original
-                    if finalURL != url {
-                        try? FileManager.default.removeItem(at: url)
+                    // Speed up the video using the recorder's method
+                    recorder.speedUpVideo(inputURL: url, speedIncreasePercent: speedIncreasePercent) { processedURL in
+                        guard let finalURL = processedURL else {
+                            showToast("Processing failed.", autoDismiss: true)
+                            return
+                        }
+                        
+                        // Save to photos
+                        saveToPhotos(url: finalURL)
+                        
+                        // Clean up temporary file if different from original
+                        if finalURL != url {
+                            try? FileManager.default.removeItem(at: url)
+                        }
                     }
                 }
             }
         } else {
             recorder.startRecording()
             isShowingSettings = false
+        }
+    }
+    
+    // NEW: cancel handler used by the trash button
+    private func handleCancelRecording() {
+        recorder.cancelCurrentRecording()
+        // isRecording change will stop timer and hide trash
+    }
+
+    // NEW: show hint when user releases before 2 seconds
+    private func showCancelHint() {
+        withAnimation {
+            showCancelHintToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation {
+                showCancelHintToast = false
+            }
         }
     }
     
@@ -516,26 +546,35 @@ struct BottomControlBar: View {
     @ObservedObject var recorder: VideoRecorder
     @Binding var isShowingSettings: Bool
     let onRecordToggle: () -> Void
+    let onCancelRecording: () -> Void      // NEW
+    let onCancelHint: () -> Void           // NEW
     let onSave: (URL) -> Void
-    
+
     var body: some View {
         VStack {
             Spacer()
             
-            VStack(spacing: 6) {
-                HStack {
-                    Spacer()
-                    
-                    RecordButton(
-                        isRecording: recorder.isRecording,
-                        onToggle: onRecordToggle
-                    )
-                    
-                    Spacer()
+            ZStack {
+                // Centered record button
+                RecordButton(
+                    isRecording: recorder.isRecording,
+                    onToggle: onRecordToggle
+                )
+                
+                // Right-aligned trash button (only while recording)
+                if recorder.isRecording {
+                    HStack {
+                        Spacer()
+                        CancelRecordingButton(
+                            onCancel: onCancelRecording,
+                            onShortPress: onCancelHint
+                        )
+                    }
+                    .padding(.horizontal, 16)
                 }
-                .padding(.horizontal, 16)
             }
             .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
             .background(Color.black.opacity(0.9))
         }
     }
@@ -564,6 +603,52 @@ struct RecordButton: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Cancel Recording Button (Trash)
+struct CancelRecordingButton: View {
+    let onCancel: () -> Void
+    let onShortPress: () -> Void
+
+    @State private var didFireLongPress = false
+
+    var body: some View {
+        Button(action: {}) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white, lineWidth: 3)
+                    .frame(width: 44, height: 44)
+
+                Image(systemName: "trash")
+                    .foregroundColor(.white)
+                    .font(.system(size: 18, weight: .semibold))
+            }
+        }
+        .buttonStyle(PlainButtonStyle())
+        // Long press recognizer (2 seconds)
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 2.0)
+                .onChanged { _ in
+                    // reset when finger goes down
+                    didFireLongPress = false
+                }
+                .onEnded { finished in
+                    if finished {
+                        didFireLongPress = true
+                        onCancel()
+                    }
+                }
+        )
+        // Short tap / short press recognizer
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onEnded { _ in
+                    if !didFireLongPress {
+                        onShortPress()
+                    }
+                }
+        )
     }
 }
 
@@ -630,7 +715,26 @@ struct ProcessingToast: View {
     }
 }
 
-// MARK: - Settings Panel
+// MARK: - Cancel Hint Toast
+struct CancelHintToast: View {
+    var body: some View {
+        VStack {
+            Spacer()
+            Text("Press 2 seconds to cancel recording")
+                .font(.body)
+                .foregroundColor(.white)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.black.opacity(0.8))
+                .cornerRadius(10)
+                .padding(.bottom, 150)
+        }
+        .transition(.opacity)
+        .zIndex(100)
+    }
+}
+
+// MARK: - Settings Panel & related views
 struct SettingsPanel: View {
     @Binding var isShowingSettings: Bool
     @ObservedObject var recorder: VideoRecorder
@@ -806,7 +910,7 @@ struct SpeedIncreaseRow: View {
     }
 }
 
-// MARK: - Plus Minus Control (Reusable Component)
+// MARK: - Plus Minus Control
 struct PlusMinusControl: View {
     let value: Int
     let minValue: Int
