@@ -51,10 +51,12 @@ struct ContentView: View {
     @StateObject private var recordingTimerController = RecordingTimerController()
     
     @State private var screenHeight: CGFloat = 0
+    // Flag to ensure we only set the initial scroll position once to prevent jumping
+    @State private var isInitialLoad = true
 
     private let defaultTeleText = ""
 
-    @State private var teleText: String = ""
+    @AppStorage("teleText") private var teleText: String = ""
     @State private var teleTextSource: String = "Default"
     
     @State private var showClipboardToast = false
@@ -74,7 +76,12 @@ struct ContentView: View {
     
     var body: some View {
         GeometryReader { geo in
-            let _ = DispatchQueue.main.async { self.screenHeight = geo.size.height }
+            // Capture screen height
+            let _ = DispatchQueue.main.async {
+                if self.screenHeight != geo.size.height {
+                    self.screenHeight = geo.size.height
+                }
+            }
             
             ZStack {
                 CameraPreviewLayer(recorder: recorder)
@@ -91,10 +98,12 @@ struct ContentView: View {
                     autoScroll: autoScroll,
                     recorder: recorder,
                     isShowingSettings: $isShowingSettings,
-                    onClipboardPaste: { loadTeleprompterTextFromClipboard(explicitUserAction: true) }
+                    onClipboardPaste: { loadTeleprompterTextFromClipboard(explicitUserAction: true) },
+                    onClearText: handleClearText
                 )
                 
                 BottomControlBar(
+                    teleText: teleText,
                     recorder: recorder,
                     isShowingSettings: $isShowingSettings,
                     onRecordToggle: handleRecordToggle,
@@ -131,9 +140,6 @@ struct ContentView: View {
             .background(Color.black.ignoresSafeArea())
         }
         .onAppear {
-            teleText = defaultTeleText
-            teleTextSource = "Default"
-
             teleprompterFontSize = CGFloat(storedTeleprompterFontSize)
 
             AVCaptureDevice.requestAccess(for: .video) { videoGranted in
@@ -141,14 +147,19 @@ struct ContentView: View {
                     if videoGranted && audioGranted {
                         DispatchQueue.main.async {
                             recorder.setupSession()
-                            
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                let spacerHeight = self.screenHeight * 0.5
-                                self.autoScroll.contentOffsetY = spacerHeight
-                            }
+                            // Note: Scroll position logic moved to .onChange(of: screenHeight)
+                            // to prevent the visible jump.
                         }
                     }
                 }
+            }
+        }
+        // This ensures text is positioned correctly immediately upon load
+        .onChange(of: screenHeight) { newHeight in
+            if isInitialLoad && newHeight > 0 {
+                let spacerHeight = newHeight * 0.5
+                autoScroll.contentOffsetY = spacerHeight
+                isInitialLoad = false
             }
         }
         .onDisappear {
@@ -217,6 +228,14 @@ struct ContentView: View {
         recordingTimerController.stop()
         UIApplication.shared.isIdleTimerDisabled = false
     }
+    
+    private func handleClearText() {
+        withAnimation {
+            teleText = ""
+            teleTextSource = "Default"
+            autoScroll.stop()
+        }
+    }
 
     private func showCancelHint() {
         withAnimation {
@@ -264,6 +283,7 @@ struct ContentView: View {
                 teleText = clipboardString
                 teleTextSource = "Clipboard"
                 
+                // Reset position when pasting new text
                 let spacerHeight = screenHeight * 0.5
                 autoScroll.contentOffsetY = spacerHeight
                 didPaste = true
@@ -400,9 +420,11 @@ struct TopControlBar: View {
     @ObservedObject var recorder: VideoRecorder
     @Binding var isShowingSettings: Bool
     let onClipboardPaste: () -> Void
+    let onClearText: () -> Void
     
     var body: some View {
-        VStack {
+        VStack(alignment: .leading, spacing: 0) {
+            // Row 1: Main Top Controls
             HStack(spacing: 12) {
                 ClipboardButton(onPaste: onClipboardPaste)
                 
@@ -422,6 +444,21 @@ struct TopControlBar: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
             .background(Color.black.opacity(0.6))
+            
+            // Row 2: Clear Button (Only if text exists)
+            // Visible even during recording
+            if !teleText.isEmpty {
+                HStack {
+                    ClearTextButton(onClear: onClearText)
+                        // MARK: - Adjust Position Here
+                        // Moved 8pt left and 12pt up as requested
+                        .offset(x: -8, y: -12)
+                    
+                    Spacer()
+                }
+                .padding(.leading, 12)
+                .padding(.top, 10)
+            }
             
             Spacer()
         }
@@ -542,6 +579,7 @@ struct SettingsButton: View {
 
 // MARK: - Bottom Control Bar
 struct BottomControlBar: View {
+    let teleText: String
     @ObservedObject var recorder: VideoRecorder
     @Binding var isShowingSettings: Bool
     let onRecordToggle: () -> Void
@@ -591,8 +629,8 @@ struct RecordButton: View {
                 
                 if isRecording {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.red)
-                        .frame(width: 26, height: 26)
+                    .fill(Color.red)
+                    .frame(width: 26, height: 26)
                 } else {
                     Circle()
                         .fill(Color.red)
@@ -643,6 +681,32 @@ struct CancelRecordingButton: View {
                     }
                 }
         )
+    }
+}
+
+// MARK: - Clear Text Button
+struct ClearTextButton: View {
+    let onClear: () -> Void
+    
+    var body: some View {
+        Button(action: onClear) {
+            ZStack {
+                // Background hit target (invisible but tappable)
+                Color.black.opacity(0.001)
+                    .frame(width: 44, height: 44)
+                
+                // Visual elements
+                ZStack {
+                    Circle()
+                        .stroke(Color.white, lineWidth: 2)
+                        .frame(width: 22, height: 22) // 50% smaller
+                    
+                    Image(systemName: "xmark")
+                        .foregroundColor(.white)
+                        .font(.system(size: 10, weight: .bold)) // ~80% smaller
+                }
+            }
+        }
     }
 }
 
