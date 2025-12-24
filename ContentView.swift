@@ -331,28 +331,43 @@ struct CameraPreviewLayer: View {
     @ObservedObject var recorder: VideoRecorder
     
     var body: some View {
-        GeometryReader { previewGeo in
-            let verticalOffset: CGFloat = 88
-            
-            ZStack {
-                CameraPreview(session: recorder.session)
-                    .frame(
-                        width: previewGeo.size.width,
-                        height: recorder.selectedAspectRatio == .nineSixteen
-                            ? (previewGeo.size.height - verticalOffset)
-                            : previewGeo.size.height
-                    )
-                    .offset(y: recorder.selectedAspectRatio == .nineSixteen ? verticalOffset : 0)
-                    .clipped()
-                
-                if recorder.selectedAspectRatio == .sixteenNine {
-                    SixteenNineMask(geoSize: previewGeo.size)
+        // A black background that fills the entire screen, behind the preview.
+        Color.black
+            .ignoresSafeArea()
+            .overlay(
+                GeometryReader { previewGeo in
+                    // A ZStack to center the preview view within the available space.
+                    ZStack {
+                        CameraPreview(image: recorder.previewImage)
+                            // --- THIS IS THE CRITICAL FIX ---
+                            // 1. We create a view that is FORCED to have the correct aspect ratio.
+                            .aspectRatio(
+                                // If 9:16 mode, use a 9:16 ratio.
+                                // If 16:9 (our 1:1) mode, use a 1.0 (square) ratio.
+                                recorder.selectedAspectRatio == .nineSixteen ? (9.0 / 16.0) : 1.0,
+                                
+                                // 2. The contentMode .fit makes this correctly-proportioned view
+                                //    fit inside the ZStack's bounds (which is the full screen).
+                                contentMode: .fit
+                            )
+                            // 3. We constrain the view to the available geometry.
+                            //    It will grow as large as possible while maintaining the ratio defined above.
+                            .frame(
+                                maxWidth: previewGeo.size.width,
+                                maxHeight: previewGeo.size.height
+                            )
+                            // 4. Clipping ensures the underlying image (which is .fill) doesn't bleed out
+                            //    if there are any minor rounding errors.
+                            .clipped()
+                    }
+                    // Ensure the ZStack fills the GeometryReader to provide centering bounds.
+                    .frame(width: previewGeo.size.width, height: previewGeo.size.height)
                 }
-            }
-        }
-        .ignoresSafeArea()
+            )
     }
 }
+
+
 
 // MARK: - 16:9 Mask
 struct SixteenNineMask: View {
