@@ -15,7 +15,7 @@ struct CameraPreview: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
         } else {
-            // Show black until the first frame arrives
+            // Show blue until the first frame arrives
             Color.blue
         }
     }

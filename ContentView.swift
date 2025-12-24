@@ -331,42 +331,37 @@ struct CameraPreviewLayer: View {
     @ObservedObject var recorder: VideoRecorder
     
     var body: some View {
-        // A black background that fills the entire screen, behind the preview.
-        Color.black
-            .ignoresSafeArea()
-            .overlay(
-                GeometryReader { previewGeo in
-                    // A ZStack to center the preview view within the available space.
-                    ZStack {
-                        CameraPreview(image: recorder.previewImage)
-                            // --- THIS IS THE CRITICAL FIX ---
-                            // 1. We create a view that is FORCED to have the correct aspect ratio.
-                            .aspectRatio(
-                                // If 9:16 mode, use a 9:16 ratio.
-                                // If 16:9 (our 1:1) mode, use a 1.0 (square) ratio.
-                                recorder.selectedAspectRatio == .nineSixteen ? (9.0 / 16.0) : 1.0,
-                                
-                                // 2. The contentMode .fit makes this correctly-proportioned view
-                                //    fit inside the ZStack's bounds (which is the full screen).
-                                contentMode: .fit
-                            )
-                            // 3. We constrain the view to the available geometry.
-                            //    It will grow as large as possible while maintaining the ratio defined above.
-                            .frame(
-                                maxWidth: previewGeo.size.width,
-                                maxHeight: previewGeo.size.height
-                            )
-                            // 4. Clipping ensures the underlying image (which is .fill) doesn't bleed out
-                            //    if there are any minor rounding errors.
-                            .clipped()
-                    }
-                    // Ensure the ZStack fills the GeometryReader to provide centering bounds.
-                    .frame(width: previewGeo.size.width, height: previewGeo.size.height)
+        GeometryReader { previewGeo in
+            VStack { // Use a VStack to center the content
+                Spacer()
+                
+                ZStack {
+                    // The CameraPreview now handles its own aspect ratio correctly.
+                    // We just need to give it a correctly-shaped container.
+                    CameraPreview(image: recorder.previewImage)
                 }
-            )
+                // --- THIS IS THE SECOND CRITICAL FIX ---
+                // We now dynamically change the FRAME's aspect ratio.
+                .frame(
+                    width: previewGeo.size.width,
+                    // When in 1:1 mode, make the frame a square.
+                    // When in 9:16 mode, use the appropriate vertical height.
+                    height: recorder.selectedAspectRatio == .sixteenNine
+                        ? previewGeo.size.width // for a 1:1 square frame
+                        : (previewGeo.size.height - 88) // for the 9:16 UI
+                )
+                .clipped()
+                
+                Spacer()
+            }
+            // The offset is no longer needed as the VStack centers the preview.
+            .ignoresSafeArea()
+            
+            // --- REMOVED THE MASK ---
+            // The SixteenNineMask is no longer necessary as we want to see the full sensor output.
+        }
     }
 }
-
 
 
 // MARK: - 16:9 Mask

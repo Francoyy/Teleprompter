@@ -3,6 +3,7 @@ import AVFoundation
 import UIKit
 import Combine
 import VideoToolbox
+import CoreImage // Import CoreImage for cropping
 
 enum AspectRatio: Int, CustomStringConvertible {
     case nineSixteen = 0 // Vertical
@@ -36,6 +37,9 @@ class VideoRecorder: NSObject, ObservableObject {
 
     private var currentOutputURL: URL?
     private var sessionStartTime: CMTime?
+    
+    // MARK: - FIX: Add CIContext for high-performance cropping
+    private let ciContext = CIContext(options: nil)
     
     override init() {
         super.init()
@@ -83,7 +87,6 @@ class VideoRecorder: NSObject, ObservableObject {
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
 
-        // Configure Video Output settings (but don't add it to the session yet)
         let videoQueue = DispatchQueue(label: "videoQueue")
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -91,10 +94,8 @@ class VideoRecorder: NSObject, ObservableObject {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
         
-        // Configure the entire camera pipeline for the initial aspect ratio
         configureCameraForAspectRatio(selectedAspectRatio)
 
-        // Configure Audio Input/Output
         if let audioDevice = AVCaptureDevice.default(for: .audio) {
             do {
                 let audioIn = try AVCaptureDeviceInput(device: audioDevice)
@@ -117,22 +118,23 @@ class VideoRecorder: NSObject, ObservableObject {
             print("\n[DEBUG] --- SWITCHING ASPECT RATIO ---")
             print("[DEBUG] From: \(selectedAspectRatio.description) To: \(ratio.description)")
             
-            // --- THE DEFINITIVE FIX: STOP THE SESSION COMPLETELY ---
-            // This is the critical step to ensure all underlying hardware/software state is cleared.
-            session.stopRunning()
-            
-            self.selectedAspectRatio = ratio
-            UserDefaults.standard.set(ratio.rawValue, forKey: aspectRatioKey)
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                
+                self.session.stopRunning()
+                
+                DispatchQueue.main.async {
+                    self.selectedAspectRatio = ratio
+                }
+                UserDefaults.standard.set(ratio.rawValue, forKey: self.aspectRatioKey)
 
-            // Reconfigure the session while it's stopped
-            session.beginConfiguration()
-            configureCameraForAspectRatio(ratio)
-            session.commitConfiguration()
-            
-            // --- THE DEFINITIVE FIX: RESTART THE SESSION ---
-            // Now that the configuration is clean, restart the session.
-            session.startRunning()
-            print("[DEBUG] --- SWITCH COMPLETE ---\n")
+                self.session.beginConfiguration()
+                self.configureCameraForAspectRatio(ratio)
+                self.session.commitConfiguration()
+                
+                self.session.startRunning()
+                print("[DEBUG] --- SWITCH COMPLETE ---\n")
+            }
         }
     }
     
@@ -143,7 +145,6 @@ class VideoRecorder: NSObject, ObservableObject {
             return
         }
         
-        // 1. REMOVE existing video input and output from the session
         session.removeOutput(videoOutput)
         session.inputs.forEach { input in
             if let devInput = input as? AVCaptureDeviceInput, devInput.device.hasMediaType(.video) {
@@ -151,7 +152,6 @@ class VideoRecorder: NSObject, ObservableObject {
             }
         }
         
-        // 2. ADD new video input
         do {
             let input = try AVCaptureDeviceInput(device: videoDevice)
             if session.canAddInput(input) {
@@ -162,7 +162,6 @@ class VideoRecorder: NSObject, ObservableObject {
             return
         }
         
-        // 3. FIND and SET the desired device format
         var bestFormat: AVCaptureDevice.Format?
         if ratio == .sixteenNine {
             bestFormat = videoDevice.formats.first { format in
@@ -208,7 +207,6 @@ class VideoRecorder: NSObject, ObservableObject {
             }
         }
         
-        // 4. ADD the video output back to the session. This creates a new connection.
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
         } else {
@@ -216,7 +214,6 @@ class VideoRecorder: NSObject, ObservableObject {
             return
         }
         
-        // 5. CONFIGURE the new connection
         guard let connection = videoOutput.connection(with: .video) else {
             print("❌ Failed to get new video connection.")
             return
@@ -226,7 +223,6 @@ class VideoRecorder: NSObject, ObservableObject {
             print("[DEBUG] Connection orientation set to PORTRAIT")
         }
         if connection.isVideoMirroringSupported {
-            // Front camera previews should be mirrored.
             connection.isVideoMirrored = true
         }
     }
@@ -243,30 +239,35 @@ class VideoRecorder: NSObject, ObservableObject {
 
         do {
             writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-            var videoSettings: [String: Any] = [:]
+            
+            // --- THIS IS THE FIX (Part 1) ---
+            // We now calculate the final video dimensions based on the user's intent.
+            let outputWidth: Int
+            let outputHeight: Int
             
             if selectedAspectRatio == .sixteenNine {
-                videoSettings = [
-                    AVVideoCodecKey: AVVideoCodecType.h264,
-                    AVVideoWidthKey: 3840,
-                    AVVideoHeightKey: 3840,
-                    AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
-                ]
+                // For 16:9 mode (our square mode), the output must be square.
+                // We use the SHORTER of the sensor's dimensions as the side for our square.
+                // e.g., for a 1920x1440 sensor, the output will be 1440x1440.
+                let squareDim = min(nativeFormatWidth, nativeFormatHeight)
+                outputWidth = squareDim
+                outputHeight = squareDim
             } else { // .nineSixteen
-                // The output dimensions must match the rotated pixel buffer
-                let w = nativeFormatHeight
-                let h = nativeFormatWidth
-                videoSettings = [
-                    AVVideoCodecKey: AVVideoCodecType.h264,
-                    AVVideoWidthKey: w,
-                    AVVideoHeightKey: h,
-                    AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
-                ]
+                // For 9:16, the output is a direct rotation of the sensor.
+                outputWidth = nativeFormatHeight
+                outputHeight = nativeFormatWidth
             }
+            
+            let videoSettings: [String: Any] = [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: outputWidth,
+                AVVideoHeightKey: outputHeight,
+                AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
+            ]
             
             videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoInput?.expectsMediaDataInRealTime = true
-            videoInput?.transform = CGAffineTransform.identity // Transform is handled by buffer orientation
+            videoInput?.transform = CGAffineTransform.identity
 
             if let writer = writer, let videoInput = videoInput, writer.canAdd(videoInput) {
                 writer.add(videoInput)
@@ -302,6 +303,12 @@ class VideoRecorder: NSObject, ObservableObject {
         sessionStartTime = nil
         writer.finishWriting { [weak self] in
             guard let self = self else { return }
+            
+            // Check writer status for debugging
+            if writer.status == .failed {
+                print("❌ Writer failed with error: \(writer.error?.localizedDescription ?? "Unknown error")")
+            }
+            
             let url = self.currentOutputURL
             self.writer = nil
             self.videoInput = nil
@@ -318,44 +325,84 @@ class VideoRecorder: NSObject, ObservableObject {
         isRecording = false
         sessionStartTime = nil
         let urlToDelete = currentOutputURL
-        writer.finishWriting { [weak self] in
-            guard let self = self else { return }
-            self.writer = nil
-            self.videoInput = nil
-            self.audioInput = nil
-            if let url = urlToDelete {
-                try? FileManager.default.removeItem(at: url)
-            }
-            self.currentOutputURL = nil
-            DispatchQueue.main.async { completion?() }
+        writer.cancelWriting() // Use cancelWriting for faster teardown
+        self.writer = nil
+        self.videoInput = nil
+        self.audioInput = nil
+        if let url = urlToDelete {
+            try? FileManager.default.removeItem(at: url)
         }
+        self.currentOutputURL = nil
+        DispatchQueue.main.async { completion?() }
     }
 }
 
 extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         if output == videoOutput {
-            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                // --- CRITICAL DEBUGGING ---
-                // This log shows the actual dimensions of the image data we receive.
-                // It will now be correct after every switch.
-                let width = CVPixelBufferGetWidth(pixelBuffer)
-                let height = CVPixelBufferGetHeight(pixelBuffer)
-                print("[DEBUG] Pixel Buffer Received: \(width)x\(height)")
-                
-                var cgImage: CGImage?
-                VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-                DispatchQueue.main.async {
-                    self.previewImage = cgImage
-                }
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            
+            // Update the live preview with the original, uncropped buffer
+            var cgImage: CGImage?
+            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+            DispatchQueue.main.async {
+                self.previewImage = cgImage
             }
             
             guard let writer = writer, isRecording, let videoInput = videoInput, videoInput.isReadyForMoreMediaData else { return }
+            
             if sessionStartTime == nil {
                 sessionStartTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 writer.startSession(atSourceTime: sessionStartTime!)
             }
-            videoInput.append(sampleBuffer)
+            
+            // --- THIS IS THE FIX (Part 2) ---
+            if selectedAspectRatio == .sixteenNine {
+                let width = CVPixelBufferGetWidth(pixelBuffer)
+                let height = CVPixelBufferGetHeight(pixelBuffer)
+
+                if width != height {
+                    // This is the fallback case (e.g., 1440x1920 buffer). We must crop it.
+                    let shorterSide = min(width, height)
+                    let xOffset = (width - shorterSide) / 2
+                    let yOffset = (height - shorterSide) / 2
+                    
+                    let cropRect = CGRect(x: xOffset, y: yOffset, width: shorterSide, height: shorterSide)
+                    
+                    // Create a new pixel buffer to hold the cropped image
+                    var croppedPixelBuffer: CVPixelBuffer?
+                    CVPixelBufferCreate(kCFAllocatorDefault, shorterSide, shorterSide, CVPixelBufferGetPixelFormatType(pixelBuffer), nil, &croppedPixelBuffer)
+                    
+                    guard let destinationPixelBuffer = croppedPixelBuffer else { return }
+
+                    // Use CIImage to perform the crop
+                    let ciImage = CIImage(cvPixelBuffer: pixelBuffer).cropped(to: cropRect)
+                    ciContext.render(ciImage, to: destinationPixelBuffer)
+                    
+                    // Create a new sample buffer with the same timing but new cropped pixel buffer
+                    var newSampleBuffer: CMSampleBuffer?
+                    var timingInfo: CMSampleTimingInfo = .invalid
+                    CMSampleBufferGetSampleTimingInfo(sampleBuffer, at: 0, timingInfoOut: &timingInfo)
+
+
+                    var videoInfo: CMVideoFormatDescription?
+                    CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: destinationPixelBuffer, formatDescriptionOut: &videoInfo)
+                    
+                    if let videoInfo = videoInfo {
+                        CMSampleBufferCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: destinationPixelBuffer, dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: videoInfo, sampleTiming: &timingInfo, sampleBufferOut: &newSampleBuffer)
+                    }
+                    
+                    if let newSampleBuffer = newSampleBuffer {
+                        videoInput.append(newSampleBuffer)
+                    }
+                } else {
+                    // Buffer is already square, append directly
+                    videoInput.append(sampleBuffer)
+                }
+            } else {
+                // It's 9:16 mode, no cropping needed
+                videoInput.append(sampleBuffer)
+            }
             
         } else if output == audioOutput {
             guard let writer = writer, isRecording, let audioInput = audioInput, audioInput.isReadyForMoreMediaData else { return }
