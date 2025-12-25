@@ -1,37 +1,22 @@
+// CameraPreview.swift (Corrected and Simplified)
+
 import SwiftUI
 import AVFoundation
 import UIKit
 
-struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
-
-    func makeUIView(context: Context) -> PreviewView {
-        let view = PreviewView()
-        view.videoPreviewLayer.session = session
-        // .resizeAspect => see full sensor frame; no extra crop/zoom
-        view.videoPreviewLayer.videoGravity = .resizeAspect
-        return view
-    }
-
-    func updateUIView(_ uiView: PreviewView, context: Context) {
-        if let connection = uiView.videoPreviewLayer.connection {
-            if #available(iOS 17.0, *) {
-                if connection.isVideoRotationAngleSupported(90) {
-                    connection.videoRotationAngle = 90 // portrait
-                }
-            } else if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
-            }
+struct CameraPreview: View {
+    let image: CGImage?
+    
+    var body: some View {
+        if let cgImage = image {
+            // The image should be resizable and fill the frame it is given.
+            // The container will be responsible for the correct shape.
+            Image(decorative: cgImage, scale: 1.0, orientation: .up)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            // Show black until the first frame arrives
+            Color.blue
         }
-    }
-}
-
-final class PreviewView: UIView {
-    override class var layerClass: AnyClass {
-        AVCaptureVideoPreviewLayer.self
-    }
-
-    var videoPreviewLayer: AVCaptureVideoPreviewLayer {
-        layer as! AVCaptureVideoPreviewLayer
     }
 }

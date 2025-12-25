@@ -2,20 +2,28 @@ import Foundation
 import AVFoundation
 import UIKit
 import Combine
+import VideoToolbox
 
-enum AspectRatio: Int {
+enum AspectRatio: Int, CustomStringConvertible {
     case nineSixteen = 0 // Vertical
-    case sixteenNine = 1 // Horizontal
+    case sixteenNine = 1 // Horizontal (using a 1:1 sensor source)
+    
+    var description: String {
+        switch self {
+        case .nineSixteen: return "9:16"
+        case .sixteenNine: return "16:9 (1:1)"
+        }
+    }
 }
 
 class VideoRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published private(set) var selectedAspectRatio: AspectRatio = .nineSixteen
+    @Published var previewImage: CGImage?
 
     private let aspectRatioKey = "selectedAspectRatio"
 
     let session = AVCaptureSession()
-
     let videoOutput = AVCaptureVideoDataOutput()
     let audioOutput = AVCaptureAudioDataOutput()
 
@@ -23,8 +31,6 @@ class VideoRecorder: NSObject, ObservableObject {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     
-    // Dimensions of the active format in LANDSCAPE (Sensor native)
-    // e.g. 4032 (W) x 3024 (H)
     private var nativeFormatWidth: Int = 0
     private var nativeFormatHeight: Int = 0
 
@@ -33,15 +39,12 @@ class VideoRecorder: NSObject, ObservableObject {
     
     override init() {
         super.init()
-
-        // Load persisted aspect ratio if present
         let storedValue = UserDefaults.standard.integer(forKey: aspectRatioKey)
         if let storedRatio = AspectRatio(rawValue: storedValue) {
             selectedAspectRatio = storedRatio
         }
     }
     
-    // MARK: - Optional: Audio Session Configuration (iOS / visionOS)
     private func configureAudioSessionIfNeeded() {
         #if os(iOS) || os(tvOS) || os(visionOS)
         let audioSession = AVAudioSession.sharedInstance()
@@ -56,7 +59,6 @@ class VideoRecorder: NSObject, ObservableObject {
         #endif
     }
     
-    // MARK: - Camera Selection
     func getBestFrontCamera() -> AVCaptureDevice? {
         if let ultraWide = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInUltraWideCamera],
@@ -65,7 +67,6 @@ class VideoRecorder: NSObject, ObservableObject {
         ).devices.first {
             return ultraWide
         }
-        
         if let wide = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera],
             mediaType: .video,
@@ -73,18 +74,16 @@ class VideoRecorder: NSObject, ObservableObject {
         ).devices.first {
             return wide
         }
-        
         return nil
     }
     
-    // MARK: - Session Setup
     func setupSession() {
         configureAudioSessionIfNeeded()
 
         session.beginConfiguration()
-        session.sessionPreset = .inputPriority // Allow manual format
+        session.sessionPreset = .inputPriority
 
-        // 1. Video Output Setup
+        // Configure Video Output settings (but don't add it to the session yet)
         let videoQueue = DispatchQueue(label: "videoQueue")
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -92,22 +91,16 @@ class VideoRecorder: NSObject, ObservableObject {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
         
-        if session.canAddOutput(videoOutput) {
-            session.addOutput(videoOutput)
-        }
-        
-        // 2. Configure Input & Format using the persisted aspect ratio
+        // Configure the entire camera pipeline for the initial aspect ratio
         configureCameraForAspectRatio(selectedAspectRatio)
 
-        // 3. Audio
+        // Configure Audio Input/Output
         if let audioDevice = AVCaptureDevice.default(for: .audio) {
             do {
                 let audioIn = try AVCaptureDeviceInput(device: audioDevice)
                 if session.canAddInput(audioIn) { session.addInput(audioIn) }
-            } catch {
-            }
+            } catch {}
         }
-        
         let audioQueue = DispatchQueue(label: "audioQueue")
         audioOutput.setSampleBufferDelegate(self, queue: audioQueue)
         if session.canAddOutput(audioOutput) {
@@ -118,95 +111,145 @@ class VideoRecorder: NSObject, ObservableObject {
         startSession()
     }
     
-    // MARK: - Aspect Ratio Switching
+    // In VideoRecorder.swift
+
     func switchAspectRatio(_ ratio: AspectRatio) {
         guard !isRecording else { return }
         if selectedAspectRatio != ratio {
+            print("\n[DEBUG] --- SWITCHING ASPECT RATIO ---")
+            print("[DEBUG] From: \(selectedAspectRatio.description) To: \(ratio.description)")
+            
+            session.stopRunning()
+            
             self.selectedAspectRatio = ratio
             UserDefaults.standard.set(ratio.rawValue, forKey: aspectRatioKey)
 
             session.beginConfiguration()
             configureCameraForAspectRatio(ratio)
             session.commitConfiguration()
+            
+            // --- FIX: Dispatch startRunning() to a background thread ---
+            // This prevents the UI from freezing and resolves the thread performance exception.
+            DispatchQueue.global(qos: .background).async {
+                self.session.startRunning()
+            }
+            
+            print("[DEBUG] --- SWITCH COMPLETE ---\n")
         }
     }
+
     
     private func configureCameraForAspectRatio(_ ratio: AspectRatio) {
-        guard let videoDevice = getBestFrontCamera() else { return }
+        print("[DEBUG] Configuring camera for \(ratio.description)")
+        guard let videoDevice = getBestFrontCamera() else {
+            print("❌ Could not get front camera.")
+            return
+        }
         
-        // Remove existing video inputs
+        // 1. REMOVE existing video input and output from the session
+        session.removeOutput(videoOutput)
         session.inputs.forEach { input in
             if let devInput = input as? AVCaptureDeviceInput, devInput.device.hasMediaType(.video) {
                 session.removeInput(input)
             }
         }
         
-        // Add Input
+        // 2. ADD new video input
         do {
             let input = try AVCaptureDeviceInput(device: videoDevice)
             if session.canAddInput(input) {
                 session.addInput(input)
             }
         } catch {
+            print("❌ Failed to create video device input: \(error)")
             return
         }
         
-        // Find Best Format
-        let targetFps: Double = 30.0
-        let targetRatio: Double = (ratio == .nineSixteen) ? (16.0/9.0) : (4.0/3.0)
+        // 3. FIND and SET the desired device format
+        var bestFormat: AVCaptureDevice.Format?
         
-        let candidates = videoDevice.formats.filter { format in
-            let pixelFormat = CMFormatDescriptionGetMediaSubType(format.formatDescription)
-            let is420v = (pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-            guard let range = format.videoSupportedFrameRateRanges.first else { return false }
-            return is420v && range.maxFrameRate >= targetFps
+        if ratio == .sixteenNine {
+            // Only try to use a true 1:1 sensor format (e.g. 3840x3840).
+            // No fallback to 4:3 or 16:9.
+            bestFormat = videoDevice.formats.first { format in
+                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                return dims.width == 3840 && dims.height == 3840
+            }
+            // NOTE: If not found, we will simply not change activeFormat for this mode.
         }
         
-        if let bestFormat = candidates.sorted(by: { lhs, rhs in
-            let dim1 = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
-            let dim2 = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
-            
-            let w1 = Double(dim1.width); let h1 = Double(dim1.height)
-            let w2 = Double(dim2.width); let h2 = Double(dim2.height)
-            
-            let r1 = w1/h1; let r2 = w2/h2
-            let diff1 = abs(r1 - targetRatio); let diff2 = abs(r2 - targetRatio)
-            
-            if abs(diff1 - diff2) < 0.01 { return w1 > w2 }
-            return diff1 < diff2
-        }).first {
+        // IMPORTANT:
+        // For 9:16, keep the original complex fallback logic EXACTLY as before.
+        if bestFormat == nil, ratio == .nineSixteen {
+            let targetFps: Double = 30.0
+            let targetRatio: Double = 16.0 / 9.0
+            let candidates = videoDevice.formats.filter { format in
+                let pixelFormat = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+                guard let range = format.videoSupportedFrameRateRanges.first else { return false }
+                return pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange &&
+                       range.maxFrameRate >= targetFps
+            }
+            bestFormat = candidates.sorted(by: { lhs, rhs in
+                let dim1 = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
+                let dim2 = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
+                let r1 = Double(dim1.width) / Double(dim1.height)
+                let r2 = Double(dim2.width) / Double(dim2.height)
+                let diff1 = abs(r1 - targetRatio); let diff2 = abs(r2 - targetRatio)
+                if abs(diff1 - diff2) < 0.01 { return dim1.width > dim2.width }
+                return diff1 < diff2
+            }).first
+        }
+        
+        if let formatToUse = bestFormat {
             do {
                 try videoDevice.lockForConfiguration()
-                videoDevice.activeFormat = bestFormat
-                let duration = CMTime(value: 1, timescale: CMTimeScale(targetFps))
+                videoDevice.activeFormat = formatToUse
+                let duration = CMTime(value: 1, timescale: 30)
                 videoDevice.activeVideoMinFrameDuration = duration
                 videoDevice.activeVideoMaxFrameDuration = duration
-                videoDevice.videoZoomFactor = 1.0
                 videoDevice.unlockForConfiguration()
                 
-                let dims = CMVideoFormatDescriptionGetDimensions(bestFormat.formatDescription)
+                let dims = CMVideoFormatDescriptionGetDimensions(formatToUse.formatDescription)
                 nativeFormatWidth = Int(dims.width)
                 nativeFormatHeight = Int(dims.height)
-                
+                print("[DEBUG] SENSOR LOCKED: \(nativeFormatWidth)x\(nativeFormatHeight)")
             } catch {
+                print("❌ Lock for configuration failed: \(error)")
             }
+        } else {
+            // For 16:9 (1:1) if no 1:1 format exists, we intentionally leave activeFormat unchanged.
+            print("[DEBUG] No new format selected for \(ratio.description); keeping current activeFormat.")
         }
         
-        // Re-apply Portrait Orientation to the Connection
-        if let connection = videoOutput.connection(with: .video) {
-            if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
-            }
+        // 4. ADD the video output back to the session. This creates a new connection.
+        if session.canAddOutput(videoOutput) {
+            session.addOutput(videoOutput)
+        } else {
+            print("❌ Could not re-add video output to session.")
+            return
+        }
+        
+        // 5. CONFIGURE the new connection
+        guard let connection = videoOutput.connection(with: .video) else {
+            print("❌ Failed to get new video connection.")
+            return
+        }
+        if connection.isVideoOrientationSupported {
+            connection.videoOrientation = .portrait
+            print("[DEBUG] Connection orientation set to PORTRAIT")
+        }
+        if connection.isVideoMirroringSupported {
+            // Front camera previews should be mirrored.
+            connection.isVideoMirrored = true
         }
     }
+
     
     func startSession() {
         DispatchQueue.global(qos: .background).async { self.session.startRunning() }
     }
     
-    func stopSession() { session.stopRunning() }
-
-    // MARK: - Recording
+    // MARK: - Recording Logic
     func startRecording() {
         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
         let outputURL = paths[0].appendingPathComponent("\(UUID().uuidString).mov")
@@ -214,36 +257,30 @@ class VideoRecorder: NSObject, ObservableObject {
 
         do {
             writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-
             var videoSettings: [String: Any] = [:]
             
-            if selectedAspectRatio == .nineSixteen {
+            if selectedAspectRatio == .sixteenNine {
+                videoSettings = [
+                    AVVideoCodecKey: AVVideoCodecType.h264,
+                    AVVideoWidthKey: 3840,
+                    AVVideoHeightKey: 3840,
+                    AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
+                ]
+            } else { // .nineSixteen
+                // The output dimensions must match the rotated pixel buffer
                 let w = nativeFormatHeight
                 let h = nativeFormatWidth
-                
                 videoSettings = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
                     AVVideoWidthKey: w,
                     AVVideoHeightKey: h,
                     AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
                 ]
-                
-            } else {
-                let outputWidth = nativeFormatHeight
-                let outputHeight = Int(Double(outputWidth) * 9.0 / 16.0)
-                
-                videoSettings = [
-                    AVVideoCodecKey: AVVideoCodecType.h264,
-                    AVVideoWidthKey: outputWidth,
-                    AVVideoHeightKey: outputHeight,
-                    AVVideoScalingModeKey: AVVideoScalingModeResizeAspectFill,
-                    AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
-                ]
             }
             
             videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoInput?.expectsMediaDataInRealTime = true
-            videoInput?.transform = CGAffineTransform.identity
+            videoInput?.transform = CGAffineTransform.identity // Transform is handled by buffer orientation
 
             if let writer = writer, let videoInput = videoInput, writer.canAdd(videoInput) {
                 writer.add(videoInput)
@@ -265,8 +302,8 @@ class VideoRecorder: NSObject, ObservableObject {
             writer?.startWriting()
             isRecording = true
             sessionStartTime = nil
-            
         } catch {
+            print("❌ Failed to start recording: \(error)")
         }
     }
     
@@ -275,67 +312,70 @@ class VideoRecorder: NSObject, ObservableObject {
             completion(nil)
             return
         }
-
         isRecording = false
         sessionStartTime = nil
-
         writer.finishWriting { [weak self] in
             guard let self = self else { return }
             let url = self.currentOutputURL
             self.writer = nil
             self.videoInput = nil
             self.audioInput = nil
-            
-            DispatchQueue.main.async {
-                completion(url)
-            }
+            DispatchQueue.main.async { completion(url) }
         }
     }
 
-    // MARK: - Cancel Recording (trash icon)
     func cancelCurrentRecording(completion: (() -> Void)? = nil) {
         guard let writer = writer, isRecording else {
             completion?()
             return
         }
-
         isRecording = false
         sessionStartTime = nil
-
         let urlToDelete = currentOutputURL
-
         writer.finishWriting { [weak self] in
             guard let self = self else { return }
-
             self.writer = nil
             self.videoInput = nil
             self.audioInput = nil
-
             if let url = urlToDelete {
                 try? FileManager.default.removeItem(at: url)
             }
             self.currentOutputURL = nil
-
-            DispatchQueue.main.async {
-                completion?()
-            }
+            DispatchQueue.main.async { completion?() }
         }
     }
 }
 
 extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let writer = writer, isRecording else { return }
-        
-        if sessionStartTime == nil {
-            sessionStartTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            writer.startSession(atSourceTime: sessionStartTime!)
-        }
-        
-        if output == videoOutput, let videoInput = videoInput, videoInput.isReadyForMoreMediaData {
+        if output == videoOutput {
+            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+                // --- CRITICAL DEBUGGING ---
+                // This log shows the actual dimensions of the image data we receive.
+                // It will now be correct after every switch.
+                //let width = CVPixelBufferGetWidth(pixelBuffer)
+                //let height = CVPixelBufferGetHeight(pixelBuffer)
+                //print("[DEBUG] Pixel Buffer Received: \(width)x\(height)")
+                
+                var cgImage: CGImage?
+                VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+                DispatchQueue.main.async {
+                    self.previewImage = cgImage
+                }
+            }
+            
+            guard let writer = writer, isRecording, let videoInput = videoInput, videoInput.isReadyForMoreMediaData else { return }
+            if sessionStartTime == nil {
+                sessionStartTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                writer.startSession(atSourceTime: sessionStartTime!)
+            }
             videoInput.append(sampleBuffer)
-        } else if output == audioOutput, let audioInput = audioInput, audioInput.isReadyForMoreMediaData {
-            audioInput.append(sampleBuffer)
+            
+        } else if output == audioOutput {
+            guard let writer = writer, isRecording, let audioInput = audioInput, audioInput.isReadyForMoreMediaData else { return }
+            if sessionStartTime != nil {
+                audioInput.append(sampleBuffer)
+            }
         }
     }
 }

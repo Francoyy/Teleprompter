@@ -51,7 +51,6 @@ struct ContentView: View {
     @StateObject private var recordingTimerController = RecordingTimerController()
     
     @State private var screenHeight: CGFloat = 0
-    // Flag to ensure we only set the initial scroll position once to prevent jumping
     @State private var isInitialLoad = true
 
     private let defaultTeleText = ""
@@ -64,10 +63,8 @@ struct ContentView: View {
     @State private var toastMessage = ""
     @State private var showGenericToast = false
     
-    // Settings UI state
     @State private var isShowingSettings = false
 
-    // Persisted + state teleprompter font size
     @AppStorage("teleprompterFontSize") private var storedTeleprompterFontSize: Double = 40
     @State private var teleprompterFontSize: CGFloat = 40
     
@@ -76,7 +73,6 @@ struct ContentView: View {
     
     var body: some View {
         GeometryReader { geo in
-            // Capture screen height
             let _ = DispatchQueue.main.async {
                 if self.screenHeight != geo.size.height {
                     self.screenHeight = geo.size.height
@@ -93,19 +89,15 @@ struct ContentView: View {
                     geoWidth: geo.size.width
                 )
                 
-                TopControlBar(
+                clearButtonOverlay(for: geo)
+                
+                // Bottom control area (options bar + recording bar)
+                BottomControlArea(
                     teleText: teleText,
                     autoScroll: autoScroll,
                     recorder: recorder,
                     isShowingSettings: $isShowingSettings,
                     onClipboardPaste: { loadTeleprompterTextFromClipboard(explicitUserAction: true) },
-                    onClearText: handleClearText
-                )
-                
-                BottomControlBar(
-                    teleText: teleText,
-                    recorder: recorder,
-                    isShowingSettings: $isShowingSettings,
                     onRecordToggle: handleRecordToggle,
                     onCancelRecording: handleCancelRecording,
                     onCancelHint: showCancelHint,
@@ -147,14 +139,11 @@ struct ContentView: View {
                     if videoGranted && audioGranted {
                         DispatchQueue.main.async {
                             recorder.setupSession()
-                            // Note: Scroll position logic moved to .onChange(of: screenHeight)
-                            // to prevent the visible jump.
                         }
                     }
                 }
             }
         }
-        // This ensures text is positioned correctly immediately upon load
         .onChange(of: screenHeight) { newHeight in
             if isInitialLoad && newHeight > 0 {
                 let spacerHeight = newHeight * 0.5
@@ -184,6 +173,41 @@ struct ContentView: View {
             handleScenePhaseChange(newPhase)
         }
     }
+    
+    // --- START OF MODIFICATION: Fixed the helper function to compile correctly ---
+    @ViewBuilder
+    private func clearButtonOverlay(for geo: GeometryProxy) -> some View {
+        if !teleText.isEmpty {
+            // By wrapping calculations in an immediately-executing closure assigned to a `let`,
+            // we separate the procedural logic from the view declaration, satisfying the compiler.
+            let origin: (x: CGFloat, y: CGFloat) = {
+                let containerSize = geo.size
+                let targetAspectRatio = recorder.selectedAspectRatio == .nineSixteen ? (9.0 / 16.0) : 1.0
+                
+                var previewWidth = containerSize.width
+                var previewHeight = previewWidth / targetAspectRatio
+                
+                if previewHeight > containerSize.height {
+                    previewHeight = containerSize.height
+                    previewWidth = previewHeight * targetAspectRatio
+                }
+                
+                let previewOriginX = (containerSize.width - previewWidth) / 2
+                let previewOriginY = (containerSize.height - previewHeight) / 2
+                return (x: previewOriginX, y: previewOriginY)
+            }() // The () executes the closure immediately
+
+            // Now the @ViewBuilder only sees the `let` declaration above and this ZStack below.
+            ZStack(alignment: .topLeading) {
+                ClearTextButton(onClear: handleClearText)
+                    .offset(x: origin.x + 10, y: origin.y - 5)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            EmptyView()
+        }
+    }
+    // --- END OF MODIFICATION ---
 
     // MARK: - Scene phase handling
     
@@ -214,7 +238,6 @@ struct ContentView: View {
                     return
                 }
                 
-                // Save directly to photos without processing
                 saveToPhotos(url: url)
             }
         } else {
@@ -283,7 +306,6 @@ struct ContentView: View {
                 teleText = clipboardString
                 teleTextSource = "Clipboard"
                 
-                // Reset position when pasting new text
                 let spacerHeight = screenHeight * 0.5
                 autoScroll.contentOffsetY = spacerHeight
                 didPaste = true
@@ -331,52 +353,26 @@ struct CameraPreviewLayer: View {
     @ObservedObject var recorder: VideoRecorder
     
     var body: some View {
-        GeometryReader { previewGeo in
-            let verticalOffset: CGFloat = 88
-            
-            ZStack {
-                CameraPreview(session: recorder.session)
-                    .frame(
-                        width: previewGeo.size.width,
-                        height: recorder.selectedAspectRatio == .nineSixteen
-                            ? (previewGeo.size.height - verticalOffset)
-                            : previewGeo.size.height
-                    )
-                    .offset(y: recorder.selectedAspectRatio == .nineSixteen ? verticalOffset : 0)
-                    .clipped()
-                
-                if recorder.selectedAspectRatio == .sixteenNine {
-                    SixteenNineMask(geoSize: previewGeo.size)
+        Color.black
+            .ignoresSafeArea() // This allows the camera to extend into safe areas
+            .overlay(
+                GeometryReader { previewGeo in
+                    ZStack {
+                        CameraPreview(image: recorder.previewImage)
+                            .aspectRatio(
+                                recorder.selectedAspectRatio == .nineSixteen ? (9.0 / 16.0) : 1.0,
+                                contentMode: .fit
+                            )
+                            .frame(
+                                maxWidth: previewGeo.size.width,
+                                maxHeight: previewGeo.size.height
+                            )
+                            .clipped()
+                    }
+                    .frame(width: previewGeo.size.width, height: previewGeo.size.height)
                 }
-            }
-        }
-        .ignoresSafeArea()
-    }
-}
-
-// MARK: - 16:9 Mask
-struct SixteenNineMask: View {
-    let geoSize: CGSize
-    
-    var body: some View {
-        let fullWidth = geoSize.width
-        let fullHeight = geoSize.height
-        let visibleHeight = fullWidth * 9.0 / 16.0
-        let clampedVisibleHeight = min(visibleHeight, fullHeight)
-        let hiddenTotal = fullHeight - clampedVisibleHeight
-        let halfHidden = max(hiddenTotal / 2.0, 0)
-        
-        VStack(spacing: 0) {
-            Color.black
-                .frame(height: halfHidden)
-            
-            Spacer(minLength: 0)
-            
-            Color.black
-                .frame(height: halfHidden)
-        }
-        .frame(width: geoSize.width, height: geoSize.height)
-        .allowsHitTesting(false)
+                .ignoresSafeArea() // Camera preview extends into safe areas (under dynamic island)
+            )
     }
 }
 
@@ -413,54 +409,127 @@ struct TeleprompterLayer: View {
     }
 }
 
-// MARK: - Top Control Bar
-struct TopControlBar: View {
+// MARK: - Bottom Control Area (Options Bar + Recording Bar)
+struct BottomControlArea: View {
     let teleText: String
     @ObservedObject var autoScroll: AutoScrollController
     @ObservedObject var recorder: VideoRecorder
     @Binding var isShowingSettings: Bool
     let onClipboardPaste: () -> Void
-    let onClearText: () -> Void
+    let onRecordToggle: () -> Void
+    let onCancelRecording: () -> Void
+    let onCancelHint: () -> Void
+    let onSave: (URL) -> Void
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Row 1: Main Top Controls
-            HStack(spacing: 12) {
-                ClipboardButton(onPaste: onClipboardPaste)
+        VStack {
+            Spacer()
+            
+            VStack(spacing: 0) {
+                // Options Bar (formerly top bar)
+                OptionsBar(
+                    teleText: teleText,
+                    autoScroll: autoScroll,
+                    recorder: recorder,
+                    isShowingSettings: $isShowingSettings,
+                    onClipboardPaste: onClipboardPaste
+                )
                 
-                if !teleText.isEmpty {
-                    SpeedControl(autoScroll: autoScroll)
-                    AutoScrollButton(autoScroll: autoScroll)
-                }
-                
-                Spacer()
-                
-                SettingsButton(
-                    isRecording: recorder.isRecording,
-                    isShowingSettings: $isShowingSettings
+                // Recording Bar (formerly bottom bar)
+                RecordingBar(
+                    recorder: recorder,
+                    onRecordToggle: onRecordToggle,
+                    onCancelRecording: onCancelRecording,
+                    onCancelHint: onCancelHint
                 )
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-            .background(Color.black.opacity(0.6))
+            .padding(.bottom, 8) // Minimal padding - let safe area handle the rest
+        }
+        .ignoresSafeArea(edges: .bottom) // Allow bars to extend into bottom safe area
+    }
+}
+
+// MARK: - Options Bar (formerly Top Control Bar)
+struct OptionsBar: View {
+    let teleText: String
+    @ObservedObject var autoScroll: AutoScrollController
+    @ObservedObject var recorder: VideoRecorder
+    @Binding var isShowingSettings: Bool
+    let onClipboardPaste: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            ClipboardButton(onPaste: onClipboardPaste)
             
-            // Row 2: Clear Button (Only if text exists)
-            // Visible even during recording
             if !teleText.isEmpty {
-                HStack {
-                    ClearTextButton(onClear: onClearText)
-                        // MARK: - Adjust Position Here
-                        // Moved 8pt left and 12pt up as requested
-                        .offset(x: -8, y: -12)
-                    
-                    Spacer()
-                }
-                .padding(.leading, 12)
-                .padding(.top, 10)
+                SpeedControl(autoScroll: autoScroll)
+                AutoScrollButton(autoScroll: autoScroll)
             }
             
             Spacer()
+            
+            SettingsButton(
+                isRecording: recorder.isRecording,
+                isShowingSettings: $isShowingSettings
+            )
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.black.opacity(0.6))
+    }
+}
+
+// MARK: - Recording Bar (formerly Bottom Control Bar)
+struct RecordingBar: View {
+    @ObservedObject var recorder: VideoRecorder
+    let onRecordToggle: () -> Void
+    let onCancelRecording: () -> Void
+    let onCancelHint: () -> Void
+    
+    var body: some View {
+        ZStack {
+            RecordButton(
+                isRecording: recorder.isRecording,
+                onToggle: onRecordToggle
+            )
+            
+            if recorder.isRecording {
+                HStack {
+                    Spacer()
+                    CancelRecordingButton(
+                        onCancel: onCancelRecording,
+                        onShortPress: onCancelHint
+                    )
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(Color.black.opacity(0.9))
+    }
+}
+
+// MARK: - Clear Text Button
+struct ClearTextButton: View {
+    let onClear: () -> Void
+    
+    var body: some View {
+        Button(action: onClear) {
+            ZStack {
+                Color.black.opacity(0.001)
+                    .frame(width: 44, height: 44)
+                
+                ZStack {
+                    Circle()
+                        .stroke(Color.white, lineWidth: 2)
+                        .frame(width: 22, height: 22)
+                    
+                    Image(systemName: "xmark")
+                        .foregroundColor(.white)
+                        .font(.system(size: 10, weight: .bold))
+                }
+            }
         }
     }
 }
@@ -577,44 +646,6 @@ struct SettingsButton: View {
     }
 }
 
-// MARK: - Bottom Control Bar
-struct BottomControlBar: View {
-    let teleText: String
-    @ObservedObject var recorder: VideoRecorder
-    @Binding var isShowingSettings: Bool
-    let onRecordToggle: () -> Void
-    let onCancelRecording: () -> Void
-    let onCancelHint: () -> Void
-    let onSave: (URL) -> Void
-
-    var body: some View {
-        VStack {
-            Spacer()
-            
-            ZStack {
-                RecordButton(
-                    isRecording: recorder.isRecording,
-                    onToggle: onRecordToggle
-                )
-                
-                if recorder.isRecording {
-                    HStack {
-                        Spacer()
-                        CancelRecordingButton(
-                            onCancel: onCancelRecording,
-                            onShortPress: onCancelHint
-                        )
-                    }
-                    .padding(.horizontal, 16)
-                }
-            }
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(0.9))
-        }
-    }
-}
-
 // MARK: - Record Button
 struct RecordButton: View {
     let isRecording: Bool
@@ -684,32 +715,6 @@ struct CancelRecordingButton: View {
     }
 }
 
-// MARK: - Clear Text Button
-struct ClearTextButton: View {
-    let onClear: () -> Void
-    
-    var body: some View {
-        Button(action: onClear) {
-            ZStack {
-                // Background hit target (invisible but tappable)
-                Color.black.opacity(0.001)
-                    .frame(width: 44, height: 44)
-                
-                // Visual elements
-                ZStack {
-                    Circle()
-                        .stroke(Color.white, lineWidth: 2)
-                        .frame(width: 22, height: 22) // 50% smaller
-                    
-                    Image(systemName: "xmark")
-                        .foregroundColor(.white)
-                        .font(.system(size: 10, weight: .bold)) // ~80% smaller
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Recording Timer Overlay
 struct RecordingTimerOverlay: View {
     let duration: TimeInterval
@@ -720,7 +725,7 @@ struct RecordingTimerOverlay: View {
             Text(formattedDuration(duration))
                 .font(.system(size: 24, weight: .bold, design: .monospaced))
                 .foregroundColor(.red)
-                .padding(.bottom, 120)
+                .padding(.bottom, 230) // Adjusted for pushed-down layout
                 .shadow(color: .black, radius: 1, x: 1, y: 1)
         }
     }
@@ -739,20 +744,20 @@ struct ClipboardToast: View {
         VStack {
             Spacer()
             Text("Clipboard is empty")
-                .font(.system(.body, design: .monospaced))   // monospaced
+                .font(.system(.body, design: .monospaced))
                 .foregroundColor(.white)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 .background(Color.black.opacity(0.8))
                 .cornerRadius(10)
-                .padding(.bottom, 150)
+                .padding(.bottom, 250) // Adjusted for pushed-down layout
         }
         .transition(.opacity)
         .zIndex(100)
     }
 }
 
-// MARK: - Generic Toast (replaces ProcessingToast)
+// MARK: - Generic Toast
 struct GenericToast: View {
     let message: String
 
@@ -760,13 +765,13 @@ struct GenericToast: View {
         VStack {
             Spacer()
             Text(message)
-                .font(.system(.body, design: .monospaced))   // monospaced
+                .font(.system(.body, design: .monospaced))
                 .foregroundColor(.white)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 .background(Color.black.opacity(0.8))
                 .cornerRadius(10)
-                .padding(.bottom, 150)
+                .padding(.bottom, 250) // Adjusted for pushed-down layout
         }
         .transition(.opacity)
         .zIndex(100)
@@ -779,20 +784,20 @@ struct CancelHintToast: View {
         VStack {
             Spacer()
             Text("Press 2 seconds to cancel recording")
-                .font(.system(.body, design: .monospaced))   // monospaced
+                .font(.system(.body, design: .monospaced))
                 .foregroundColor(.white)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 .background(Color.black.opacity(0.8))
                 .cornerRadius(10)
-                .padding(.bottom, 150)
+                .padding(.bottom, 250) // Adjusted for pushed-down layout
         }
         .transition(.opacity)
         .zIndex(100)
     }
 }
 
-// MARK: - Settings Panel & related views
+// MARK: - Settings Panel
 struct SettingsPanel: View {
     @Binding var isShowingSettings: Bool
     @ObservedObject var recorder: VideoRecorder
