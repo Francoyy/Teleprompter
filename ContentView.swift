@@ -125,7 +125,10 @@ struct ContentView: View {
                         isShowingSettings: $isShowingSettings,
                         recorder: recorder,
                         teleprompterFontSize: $teleprompterFontSize,
-                        geoSize: geo.size
+                        geoSize: geo.size,
+                        onShowToast: { message in
+                            showToast(message, autoDismiss: true)
+                        }
                     )
                 }
             }
@@ -174,12 +177,9 @@ struct ContentView: View {
         }
     }
     
-    // --- START OF MODIFICATION: Fixed the helper function to compile correctly ---
     @ViewBuilder
     private func clearButtonOverlay(for geo: GeometryProxy) -> some View {
         if !teleText.isEmpty {
-            // By wrapping calculations in an immediately-executing closure assigned to a `let`,
-            // we separate the procedural logic from the view declaration, satisfying the compiler.
             let origin: (x: CGFloat, y: CGFloat) = {
                 let containerSize = geo.size
                 let targetAspectRatio = recorder.selectedAspectRatio == .nineSixteen ? (9.0 / 16.0) : 1.0
@@ -195,9 +195,8 @@ struct ContentView: View {
                 let previewOriginX = (containerSize.width - previewWidth) / 2
                 let previewOriginY = (containerSize.height - previewHeight) / 2
                 return (x: previewOriginX, y: previewOriginY)
-            }() // The () executes the closure immediately
+            }()
 
-            // Now the @ViewBuilder only sees the `let` declaration above and this ZStack below.
             ZStack(alignment: .topLeading) {
                 ClearTextButton(onClear: handleClearText)
                     .offset(x: origin.x + 10, y: origin.y - 5)
@@ -207,7 +206,6 @@ struct ContentView: View {
             EmptyView()
         }
     }
-    // --- END OF MODIFICATION ---
 
     // MARK: - Scene phase handling
     
@@ -566,7 +564,7 @@ struct SpeedControl: View {
     var body: some View {
         HStack(spacing: 0) {
             Button(action: { autoScroll.decreaseSpeed() }) {
-                Text("−")
+                Text("-")
                     .font(.headline.bold())
                     .frame(width: 26, height: 44)
                     .contentShape(Rectangle())
@@ -774,7 +772,7 @@ struct GenericToast: View {
                 .padding(.bottom, 250) // Adjusted for pushed-down layout
         }
         .transition(.opacity)
-        .zIndex(100)
+        .zIndex(201) // Ensure toast appears above the settings panel (zIndex 200)
     }
 }
 
@@ -803,6 +801,7 @@ struct SettingsPanel: View {
     @ObservedObject var recorder: VideoRecorder
     @Binding var teleprompterFontSize: CGFloat
     let geoSize: CGSize
+    let onShowToast: (String) -> Void
     
     var body: some View {
         VStack {
@@ -811,7 +810,7 @@ struct SettingsPanel: View {
             VStack(alignment: .leading, spacing: 16) {
                 SettingsHeader(isShowingSettings: $isShowingSettings)
                 
-                AspectRatioRow(recorder: recorder)
+                AspectRatioRow(recorder: recorder, onShowToast: onShowToast)
                 
                 TeleprompterFontSizeRow(teleprompterFontSize: $teleprompterFontSize)
                 
@@ -861,13 +860,14 @@ struct SettingsHeader: View {
 // MARK: - Aspect Ratio Row
 struct AspectRatioRow: View {
     @ObservedObject var recorder: VideoRecorder
-    
+    let onShowToast: (String) -> Void
+
     var body: some View {
         HStack(spacing: 8) {
             Text("Aspect Ratio:")
                 .font(.subheadline)
                 .foregroundColor(.white)
-            
+
             AspectRatioButton(
                 title: "9:16",
                 isSelected: recorder.selectedAspectRatio == .nineSixteen,
@@ -875,15 +875,37 @@ struct AspectRatioRow: View {
             ) {
                 recorder.switchAspectRatio(.nineSixteen)
             }
-            
-            AspectRatioButton(
-                title: "16:9",
-                isSelected: recorder.selectedAspectRatio == .sixteenNine,
-                isDisabled: recorder.isRecording
-            ) {
-                recorder.switchAspectRatio(.sixteenNine)
+
+            if !recorder.isOneOneModeAvailable {
+                // If 1:1 mode is not available, this button will look disabled but will be
+                // clickable to show a toast message, unless recording is active.
+                Button(action: {
+                    onShowToast("1:1 mode is not available")
+                }) {
+                    Text("1:1")
+                        .font(.caption.bold())
+                        .foregroundColor(.gray)
+                        .frame(width: 50, height: 30)
+                        .background(Color.black.opacity(0.5))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.gray, lineWidth: 2)
+                        )
+                        .cornerRadius(6)
+                }
+                .opacity(0.6)
+                .disabled(recorder.isRecording) // Still disable it if we are recording
+            } else {
+                // If 1:1 mode is available, use the standard button logic.
+                AspectRatioButton(
+                    title: "1:1",
+                    isSelected: recorder.selectedAspectRatio == .oneOne,
+                    isDisabled: recorder.isRecording
+                ) {
+                    recorder.switchAspectRatio(.oneOne)
+                }
             }
-            
+
             Spacer()
         }
     }
@@ -900,7 +922,7 @@ struct AspectRatioButton: View {
         Button(action: action) {
             Text(title)
                 .font(.caption.bold())
-                .foregroundColor(.white)
+                .foregroundColor(isDisabled ? .gray : .white)
                 .frame(width: 50, height: 30)
                 .background(Color.black.opacity(0.5))
                 .overlay(
@@ -913,6 +935,7 @@ struct AspectRatioButton: View {
                 .cornerRadius(6)
         }
         .disabled(isDisabled)
+        .opacity(isDisabled ? 0.6 : 1.0)
     }
 }
 
@@ -958,7 +981,7 @@ struct PlusMinusControl: View {
                 let newValue = max(minValue, value - step)
                 onChange(newValue)
             }) {
-                Text("−")
+                Text("-")
                     .font(.headline.bold())
                     .frame(width: 26, height: 32)
                     .contentShape(Rectangle())

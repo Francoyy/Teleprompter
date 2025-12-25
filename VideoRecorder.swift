@@ -4,14 +4,15 @@ import UIKit
 import Combine
 import VideoToolbox
 
+// --- MODIFICATION: Renamed enum case and updated description ---
 enum AspectRatio: Int, CustomStringConvertible {
     case nineSixteen = 0 // Vertical
-    case sixteenNine = 1 // Horizontal (using a 1:1 sensor source)
+    case oneOne = 1      // Square (using a 1:1 sensor source)
     
     var description: String {
         switch self {
         case .nineSixteen: return "9:16"
-        case .sixteenNine: return "16:9 (1:1)"
+        case .oneOne: return "1:1"
         }
     }
 }
@@ -20,6 +21,8 @@ class VideoRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published private(set) var selectedAspectRatio: AspectRatio = .nineSixteen
     @Published var previewImage: CGImage?
+    // --- MODIFICATION: New published property to inform the UI about hardware support ---
+    @Published var isOneOneModeAvailable: Bool = false
 
     private let aspectRatioKey = "selectedAspectRatio"
 
@@ -59,6 +62,24 @@ class VideoRecorder: NSObject, ObservableObject {
         #endif
     }
     
+    // --- MODIFICATION: New helper to check for 1:1 hardware support ---
+    private func checkIfOneOneModeIsAvailable() {
+        guard let videoDevice = getBestFrontCamera() else {
+            DispatchQueue.main.async { self.isOneOneModeAvailable = false }
+            return
+        }
+        
+        let hasOneOneFormat = videoDevice.formats.contains { format in
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            // Specifically look for a square format. 3840x3840 is common on modern devices.
+            return dims.width == dims.height && dims.width >= 1920
+        }
+        
+        DispatchQueue.main.async {
+            self.isOneOneModeAvailable = hasOneOneFormat
+        }
+    }
+
     func getBestFrontCamera() -> AVCaptureDevice? {
         if let ultraWide = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInUltraWideCamera],
@@ -79,11 +100,12 @@ class VideoRecorder: NSObject, ObservableObject {
     
     func setupSession() {
         configureAudioSessionIfNeeded()
+        // --- MODIFICATION: Check for hardware capabilities on setup ---
+        checkIfOneOneModeIsAvailable()
 
         session.beginConfiguration()
         session.sessionPreset = .inputPriority
 
-        // Configure Video Output settings (but don't add it to the session yet)
         let videoQueue = DispatchQueue(label: "videoQueue")
         videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
         videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -91,10 +113,8 @@ class VideoRecorder: NSObject, ObservableObject {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
         
-        // Configure the entire camera pipeline for the initial aspect ratio
         configureCameraForAspectRatio(selectedAspectRatio)
 
-        // Configure Audio Input/Output
         if let audioDevice = AVCaptureDevice.default(for: .audio) {
             do {
                 let audioIn = try AVCaptureDeviceInput(device: audioDevice)
@@ -111,10 +131,14 @@ class VideoRecorder: NSObject, ObservableObject {
         startSession()
     }
     
-    // In VideoRecorder.swift
-
     func switchAspectRatio(_ ratio: AspectRatio) {
         guard !isRecording else { return }
+        // --- MODIFICATION: Prevent switching to an unavailable mode ---
+        if ratio == .oneOne && !isOneOneModeAvailable {
+            print("Cannot switch to 1:1 mode, not supported by this device.")
+            return
+        }
+        
         if selectedAspectRatio != ratio {
             print("\n[DEBUG] --- SWITCHING ASPECT RATIO ---")
             print("[DEBUG] From: \(selectedAspectRatio.description) To: \(ratio.description)")
@@ -128,25 +152,20 @@ class VideoRecorder: NSObject, ObservableObject {
             configureCameraForAspectRatio(ratio)
             session.commitConfiguration()
             
-            // --- FIX: Dispatch startRunning() to a background thread ---
-            // This prevents the UI from freezing and resolves the thread performance exception.
             DispatchQueue.global(qos: .background).async {
                 self.session.startRunning()
             }
-            
             print("[DEBUG] --- SWITCH COMPLETE ---\n")
         }
     }
-
     
     private func configureCameraForAspectRatio(_ ratio: AspectRatio) {
         print("[DEBUG] Configuring camera for \(ratio.description)")
         guard let videoDevice = getBestFrontCamera() else {
-            print("❌ Could not get front camera.")
+            print("â Œ Could not get front camera.")
             return
         }
         
-        // 1. REMOVE existing video input and output from the session
         session.removeOutput(videoOutput)
         session.inputs.forEach { input in
             if let devInput = input as? AVCaptureDeviceInput, devInput.device.hasMediaType(.video) {
@@ -154,33 +173,24 @@ class VideoRecorder: NSObject, ObservableObject {
             }
         }
         
-        // 2. ADD new video input
         do {
             let input = try AVCaptureDeviceInput(device: videoDevice)
             if session.canAddInput(input) {
                 session.addInput(input)
             }
         } catch {
-            print("❌ Failed to create video device input: \(error)")
+            print("â Œ Failed to create video device input: \(error)")
             return
         }
         
-        // 3. FIND and SET the desired device format
         var bestFormat: AVCaptureDevice.Format?
         
-        if ratio == .sixteenNine {
-            // Only try to use a true 1:1 sensor format (e.g. 3840x3840).
-            // No fallback to 4:3 or 16:9.
+        if ratio == .oneOne {
             bestFormat = videoDevice.formats.first { format in
                 let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                return dims.width == 3840 && dims.height == 3840
+                return dims.width == dims.height && dims.width == 3840
             }
-            // NOTE: If not found, we will simply not change activeFormat for this mode.
-        }
-        
-        // IMPORTANT:
-        // For 9:16, keep the original complex fallback logic EXACTLY as before.
-        if bestFormat == nil, ratio == .nineSixteen {
+        } else { // .nineSixteen
             let targetFps: Double = 30.0
             let targetRatio: Double = 16.0 / 9.0
             let candidates = videoDevice.formats.filter { format in
@@ -214,24 +224,28 @@ class VideoRecorder: NSObject, ObservableObject {
                 nativeFormatHeight = Int(dims.height)
                 print("[DEBUG] SENSOR LOCKED: \(nativeFormatWidth)x\(nativeFormatHeight)")
             } catch {
-                print("❌ Lock for configuration failed: \(error)")
+                print("â Œ Lock for configuration failed: \(error)")
             }
         } else {
-            // For 16:9 (1:1) if no 1:1 format exists, we intentionally leave activeFormat unchanged.
-            print("[DEBUG] No new format selected for \(ratio.description); keeping current activeFormat.")
+            print("[DEBUG] No specific format found for \(ratio.description); using device default.")
+            // --- THIS IS THE CORRECTED PART ---
+            // 'activeFormat' is not optional, so we access it directly.
+            let format = videoDevice.activeFormat
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            nativeFormatWidth = Int(dims.width)
+            nativeFormatHeight = Int(dims.height)
+            // --- END OF CORRECTION ---
         }
         
-        // 4. ADD the video output back to the session. This creates a new connection.
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
         } else {
-            print("❌ Could not re-add video output to session.")
+            print("â Œ Could not re-add video output to session.")
             return
         }
         
-        // 5. CONFIGURE the new connection
         guard let connection = videoOutput.connection(with: .video) else {
-            print("❌ Failed to get new video connection.")
+            print("â Œ Failed to get new video connection.")
             return
         }
         if connection.isVideoOrientationSupported {
@@ -239,7 +253,6 @@ class VideoRecorder: NSObject, ObservableObject {
             print("[DEBUG] Connection orientation set to PORTRAIT")
         }
         if connection.isVideoMirroringSupported {
-            // Front camera previews should be mirrored.
             connection.isVideoMirrored = true
         }
     }
@@ -249,7 +262,6 @@ class VideoRecorder: NSObject, ObservableObject {
         DispatchQueue.global(qos: .background).async { self.session.startRunning() }
     }
     
-    // MARK: - Recording Logic
     func startRecording() {
         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
         let outputURL = paths[0].appendingPathComponent("\(UUID().uuidString).mov")
@@ -259,11 +271,13 @@ class VideoRecorder: NSObject, ObservableObject {
             writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
             var videoSettings: [String: Any] = [:]
             
-            if selectedAspectRatio == .sixteenNine {
+            // --- MODIFICATION: Updated logic for .oneOne ---
+            if selectedAspectRatio == .oneOne {
+                // Use the native sensor dimensions, which should be square
                 videoSettings = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
-                    AVVideoWidthKey: 3840,
-                    AVVideoHeightKey: 3840,
+                    AVVideoWidthKey: nativeFormatWidth,
+                    AVVideoHeightKey: nativeFormatHeight,
                     AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 32_000_000]
                 ]
             } else { // .nineSixteen
@@ -280,7 +294,7 @@ class VideoRecorder: NSObject, ObservableObject {
             
             videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoInput?.expectsMediaDataInRealTime = true
-            videoInput?.transform = CGAffineTransform.identity // Transform is handled by buffer orientation
+            videoInput?.transform = CGAffineTransform.identity
 
             if let writer = writer, let videoInput = videoInput, writer.canAdd(videoInput) {
                 writer.add(videoInput)
@@ -303,10 +317,12 @@ class VideoRecorder: NSObject, ObservableObject {
             isRecording = true
             sessionStartTime = nil
         } catch {
-            print("❌ Failed to start recording: \(error)")
+            print("â Œ Failed to start recording: \(error)")
         }
     }
     
+    // ... (rest of the file is unchanged: stopRecording, cancelCurrentRecording, captureOutput delegate)
+    // ...
     func stopRecording(completion: @escaping (URL?) -> Void) {
         guard let writer = writer, isRecording else {
             completion(nil)
@@ -350,13 +366,6 @@ extension VideoRecorder: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         if output == videoOutput {
             if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                // --- CRITICAL DEBUGGING ---
-                // This log shows the actual dimensions of the image data we receive.
-                // It will now be correct after every switch.
-                //let width = CVPixelBufferGetWidth(pixelBuffer)
-                //let height = CVPixelBufferGetHeight(pixelBuffer)
-                //print("[DEBUG] Pixel Buffer Received: \(width)x\(height)")
-                
                 var cgImage: CGImage?
                 VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
                 DispatchQueue.main.async {
